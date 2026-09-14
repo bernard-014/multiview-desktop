@@ -2,11 +2,13 @@ import './style.css'
 
 type View = 'choose' | 'grid'
 type SlotCount = 2 | 3 | 4
+type Layout3 = 'equal' | 'focus'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
 let view: View = 'choose'
 let slotCount: SlotCount = 4
+let layout3: Layout3 = 'equal'
 let urls: string[] = []
 
 function normalizeUrl(value: string): string {
@@ -155,13 +157,23 @@ function renderChoose() {
 
 function renderGrid() {
   document.body.classList.add('is-grid')
+  const gridModifier =
+    slotCount === 3 ? `grid--3 grid--3-${layout3}` : `grid--${slotCount}`
+
   app.innerHTML = `
     <div class="grid-shell">
       <div class="toolbar" role="toolbar" aria-label="Controles">
         <button type="button" class="btn btn--ghost" id="btn-layout">Telas</button>
+        ${
+          slotCount === 3
+            ? `<button type="button" class="btn btn--ghost" id="btn-layout3">${
+                layout3 === 'equal' ? 'Topo maior' : 'Iguais'
+              }</button>`
+            : ''
+        }
         <button type="button" class="btn btn--ghost" id="btn-fullscreen">Tela cheia</button>
       </div>
-      <div class="grid grid--${slotCount}" id="watch-grid">
+      <div class="grid ${gridModifier}" id="watch-grid">
         ${urls
           .map(
             (url, i) => `
@@ -183,6 +195,17 @@ function renderGrid() {
     }
     view = 'choose'
     render()
+  })
+
+  app.querySelector('#btn-layout3')?.addEventListener('click', () => {
+    layout3 = layout3 === 'equal' ? 'focus' : 'equal'
+    const grid = app.querySelector('#watch-grid')
+    const button = app.querySelector<HTMLButtonElement>('#btn-layout3')
+    grid?.classList.toggle('grid--3-equal', layout3 === 'equal')
+    grid?.classList.toggle('grid--3-focus', layout3 === 'focus')
+    if (button) {
+      button.textContent = layout3 === 'equal' ? 'Topo maior' : 'Iguais'
+    }
   })
 
   app.querySelector('#btn-fullscreen')!.addEventListener('click', () => {

@@ -241,11 +241,14 @@ body.is-grid {
 
 .chooser__preview--3 {
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1.15fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  justify-items: stretch;
 }
 
 .chooser__preview--3 span:first-child {
   grid-column: 1 / -1;
+  width: calc((100% - 3px) / 2);
+  justify-self: center;
 }
 
 .chooser__preview--4 {
@@ -296,6 +299,18 @@ body.is-grid {
   pointer-events: auto;
 }
 
+/* 3 telas: toolbar no topo direito — evita os controles do vídeo embaixo */
+.grid-shell:has(.grid--3) .toolbar {
+  top: 0.65rem;
+  bottom: auto;
+  transform: translateY(-4px);
+}
+
+.grid-shell:has(.grid--3):hover .toolbar,
+.grid-shell:has(.grid--3):focus-within .toolbar {
+  transform: translateY(0);
+}
+
 .grid {
   display: grid;
   height: 100%;
@@ -310,14 +325,30 @@ body.is-grid {
   grid-template-rows: 1fr;
 }
 
-/* 3 telas: uma em cima (larga) + duas embaixo — maximiza área útil */
+/* 3 telas: uma em cima + duas embaixo */
 .grid--3 {
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: 1.2fr 1fr;
+  grid-template-rows: 1fr 1fr;
 }
 
 .grid--3 .panel:nth-child(1) {
   grid-column: 1 / -1;
+}
+
+/* iguais: os três painéis com o mesmo tamanho */
+.grid--3-equal .panel:nth-child(1) {
+  width: calc((100% - 2px) / 2);
+  justify-self: center;
+}
+
+/* destaque: topo um pouco maior e largura total */
+.grid--3-focus {
+  grid-template-rows: 1.35fr 1fr;
+}
+
+.grid--3-focus .panel:nth-child(1) {
+  width: auto;
+  justify-self: stretch;
 }
 
 /* 4 telas: grade 2×2 */
@@ -334,6 +365,12 @@ body.is-grid {
   min-width: 0;
   background: #000;
   overflow: hidden;
+  container-type: size;
+}
+
+.panel:not(.panel--empty) {
+  display: grid;
+  place-items: center;
 }
 
 .panel__bar {
@@ -374,9 +411,10 @@ body.is-grid {
 
 .panel iframe {
   display: block;
-  flex: 1;
-  width: 100%;
-  height: 100%;
+  aspect-ratio: 16 / 9;
+  width: min(100cqw, calc(100cqh * 16 / 9));
+  height: auto;
+  max-height: 100cqh;
   border: 0;
   background: #000;
 }
@@ -466,6 +504,12 @@ body.is-grid {
 
   .grid--3 .panel:nth-child(1) {
     grid-column: auto;
+    width: auto;
+    justify-self: stretch;
+  }
+
+  .grid--3-focus {
+    grid-template-rows: none;
   }
 
   .grid--4 {
@@ -498,18 +542,6 @@ body.is-grid {
 
   body.is-grid {
     overflow: auto;
-  }
-}
-
-/* Telas largas: 3 colunas lado a lado usam melhor o espaço horizontal */
-@media (min-width: 1400px) and (min-aspect-ratio: 16/9) {
-  .grid--3 {
-    grid-template-columns: 1fr 1fr 1fr;
-    grid-template-rows: 1fr;
-  }
-
-  .grid--3 .panel:nth-child(1) {
-    grid-column: auto;
   }
 }
 
