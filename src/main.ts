@@ -1,33 +1,13 @@
 import './style.css'
 
-const SLOT_COUNT = 4
-const STORAGE_KEY = 'quadra-urls'
-
-type View = 'setup' | 'grid'
+type View = 'choose' | 'grid'
+type SlotCount = 2 | 3 | 4
 
 const app = document.querySelector<HTMLDivElement>('#app')!
 
-let view: View = 'setup'
-let urls: string[] = loadUrls()
-
-function loadUrls(): string[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return Array(SLOT_COUNT).fill('')
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return Array(SLOT_COUNT).fill('')
-    return Array.from({ length: SLOT_COUNT }, (_, i) =>
-      typeof parsed[i] === 'string' ? parsed[i] : '',
-    )
-  } catch {
-    return Array(SLOT_COUNT).fill('')
-  }
-}
-
-function saveUrls(next: string[]) {
-  urls = next
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(urls))
-}
+let view: View = 'choose'
+let slotCount: SlotCount = 4
+let urls: string[] = []
 
 function normalizeUrl(value: string): string {
   const trimmed = value.trim()
@@ -36,114 +16,78 @@ function normalizeUrl(value: string): string {
   return `https://${trimmed}`
 }
 
-function render() {
-  if (view === 'setup') {
-    renderSetup()
-  } else {
-    renderGrid()
-  }
+function escapeAttr(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
 }
 
-function renderSetup() {
-  document.body.classList.remove('is-grid')
-  app.innerHTML = `
-    <main class="setup">
-      <div class="setup__atmosphere" aria-hidden="true"></div>
-      <div class="setup__content">
-        <p class="brand">Quadra</p>
-        <h1>Quatro jogos. Uma tela.</h1>
-        <p class="lede">
-          Cole até 4 links e assista em grade 2×2 na mesma aba — sem barras de
-          título extras. Use F11 ou o botão de tela cheia na grade.
-        </p>
-        <p class="hint">
-          Alguns sites bloqueiam abertura em iframe; nesses casos o painel fica
-          em branco e é preciso de um app com webview.
-        </p>
-        <form class="url-form" id="url-form">
-          ${urls
-            .map(
-              (url, i) => `
-            <label class="url-field">
-              <span>Jogo ${i + 1}</span>
-              <input
-                type="url"
-                name="url-${i}"
-                inputmode="url"
-                autocomplete="off"
-                spellcheck="false"
-                placeholder="https://…"
-                value="${escapeAttr(url)}"
-              />
-            </label>
-          `,
-            )
-            .join('')}
-          <button type="submit" class="btn btn--primary">Assistir</button>
-        </form>
-      </div>
-    </main>
-  `
+function setSlotCount(count: SlotCount) {
+  const next = Array.from({ length: count }, (_, i) => urls[i] ?? '')
+  urls = next
+  slotCount = count
+}
 
-  const form = app.querySelector<HTMLFormElement>('#url-form')!
+function urlFormHtml(index: number, url: string): string {
+  return `
+    <form class="panel__bar" data-slot="${index}">
+      <label class="visually-hidden" for="url-${index}">URL do jogo ${index + 1}</label>
+      <input
+        id="url-${index}"
+        type="url"
+        name="url"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="Cole o link e pressione Enter"
+        value="${escapeAttr(url)}"
+      />
+      <button type="submit" class="btn btn--load" aria-label="Abrir link">Abrir</button>
+    </form>
+  `
+}
+
+function panelInnerHtml(index: number, url: string): string {
+  if (!url) {
+    return `
+      <div class="panel__empty">
+        <p class="panel__slot">Jogo ${index + 1}</p>
+        ${urlFormHtml(index, url)}
+      </div>
+    `
+  }
+
+  return `
+    <div class="panel__overlay">
+      ${urlFormHtml(index, url)}
+    </div>
+    <iframe
+      src="${escapeAttr(url)}"
+      title="Jogo ${index + 1}"
+      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+      allowfullscreen
+      referrerpolicy="no-referrer"
+    ></iframe>
+  `
+}
+
+function bindPanelForm(panel: HTMLElement) {
+  const form = panel.querySelector<HTMLFormElement>('.panel__bar')
+  if (!form) return
+
   form.addEventListener('submit', (event) => {
     event.preventDefault()
-    const next = Array.from({ length: SLOT_COUNT }, (_, i) => {
-      const input = form.elements.namedItem(`url-${i}`) as HTMLInputElement
-      return normalizeUrl(input.value)
-    })
-    saveUrls(next)
-    view = 'grid'
-    render()
-  })
-}
-
-function renderGrid() {
-  document.body.classList.add('is-grid')
-  app.innerHTML = `
-    <div class="grid-shell">
-      <div class="toolbar" role="toolbar" aria-label="Controles da grade">
-        <button type="button" class="btn btn--ghost" id="btn-edit">Editar links</button>
-        <button type="button" class="btn btn--ghost" id="btn-fullscreen">Tela cheia</button>
-      </div>
-      <div class="grid" id="watch-grid">
-        ${urls
-          .map((url, i) => {
-            if (!url) {
-              return `
-                <div class="panel panel--empty" data-slot="${i}">
-                  <p>Sem link</p>
-                  <span>Jogo ${i + 1}</span>
-                </div>
-              `
-            }
-            return `
-              <div class="panel" data-slot="${i}">
-                <iframe
-                  src="${escapeAttr(url)}"
-                  title="Jogo ${i + 1}"
-                  allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                  allowfullscreen
-                  referrerpolicy="no-referrer"
-                ></iframe>
-              </div>
-            `
-          })
-          .join('')}
-      </div>
-    </div>
-  `
-
-  app.querySelector('#btn-edit')!.addEventListener('click', () => {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen()
-    }
-    view = 'setup'
-    render()
-  })
-
-  app.querySelector('#btn-fullscreen')!.addEventListener('click', () => {
-    toggleFullscreen()
+    const index = Number(form.dataset.slot)
+    const input = form.elements.namedItem('url') as HTMLInputElement
+    const next = normalizeUrl(input.value)
+    urls[index] = next
+    input.value = next
+    panel.classList.toggle('panel--empty', !next)
+    panel.innerHTML = panelInnerHtml(index, next)
+    bindPanelForm(panel)
+    panel.querySelector<HTMLInputElement>('input')?.blur()
   })
 }
 
@@ -159,19 +103,89 @@ function toggleFullscreen() {
   }
 }
 
-function escapeAttr(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
+function layoutPreview(count: SlotCount): string {
+  const cells = Array.from({ length: count }, () => '<span></span>').join('')
+  return `<div class="chooser__preview chooser__preview--${count}" aria-hidden="true">${cells}</div>`
 }
 
-document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && view === 'grid' && !document.fullscreenElement) {
-    view = 'setup'
+function renderChoose() {
+  document.body.classList.remove('is-grid')
+  app.innerHTML = `
+    <main class="chooser">
+      <div class="chooser__atmosphere" aria-hidden="true"></div>
+      <div class="chooser__content">
+        <p class="brand">Quadra</p>
+        <h1>Quantas telas?</h1>
+        <p class="lede">Escolha quantos jogos quer ver ao mesmo tempo.</p>
+        <div class="chooser__options" role="group" aria-label="Número de telas">
+          ${([2, 3, 4] as const)
+            .map(
+              (count) => `
+            <button type="button" class="chooser__card" data-count="${count}">
+              ${layoutPreview(count)}
+              <span class="chooser__count">${count}</span>
+              <span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span>
+            </button>
+          `,
+            )
+            .join('')}
+        </div>
+      </div>
+    </main>
+  `
+
+  app.querySelectorAll<HTMLButtonElement>('.chooser__card').forEach((button) => {
+    button.addEventListener('click', () => {
+      setSlotCount(Number(button.dataset.count) as SlotCount)
+      view = 'grid'
+      render()
+    })
+  })
+}
+
+function renderGrid() {
+  document.body.classList.add('is-grid')
+  app.innerHTML = `
+    <div class="grid-shell">
+      <div class="toolbar" role="toolbar" aria-label="Controles">
+        <button type="button" class="btn btn--ghost" id="btn-layout">Telas</button>
+        <button type="button" class="btn btn--ghost" id="btn-fullscreen">Tela cheia</button>
+      </div>
+      <div class="grid grid--${slotCount}" id="watch-grid">
+        ${urls
+          .map(
+            (url, i) => `
+          <div class="panel${url ? '' : ' panel--empty'}" data-slot="${i}">
+            ${panelInnerHtml(i, url)}
+          </div>
+        `,
+          )
+          .join('')}
+      </div>
+    </div>
+  `
+
+  app.querySelectorAll<HTMLElement>('.panel').forEach(bindPanelForm)
+
+  app.querySelector('#btn-layout')!.addEventListener('click', () => {
+    if (document.fullscreenElement) {
+      void document.exitFullscreen()
+    }
+    view = 'choose'
     render()
+  })
+
+  app.querySelector('#btn-fullscreen')!.addEventListener('click', () => {
+    toggleFullscreen()
+  })
+}
+
+function render() {
+  if (view === 'choose') {
+    renderChoose()
+  } else {
+    renderGrid()
   }
-})
+}
 
 render()
