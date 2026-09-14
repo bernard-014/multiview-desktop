@@ -157,7 +157,7 @@ function bindMoreMenu() {
     'click',
     (event) => {
       event.stopPropagation()
-      setOpen(panel.hidden)
+      setOpen(panel.hasAttribute('hidden'))
     },
     { signal },
   )
