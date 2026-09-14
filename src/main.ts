@@ -1,7 +1,7 @@
 import './style.css'
 
 type View = 'choose' | 'grid'
-type SlotCount = 2 | 3 | 4
+type SlotCount = 2 | 3 | 4 | 8 | 16
 type Layout3 = 'equal' | 'focus'
 
 const app = document.querySelector<HTMLDivElement>('#app')!
@@ -34,7 +34,7 @@ function setSlotCount(count: SlotCount) {
 
 function urlFormHtml(index: number, url: string): string {
   return `
-    <form class="panel__bar" data-slot="${index}">
+    <form class="panel__bar" data-slot="${index}" novalidate>
       <label class="visually-hidden" for="url-${index}">URL do jogo ${index + 1}</label>
       <input
         id="url-${index}"
@@ -103,6 +103,25 @@ function bindPanelForm(panel: HTMLElement) {
   })
 }
 
+function openAllPanels() {
+  const panels = [...app.querySelectorAll<HTMLElement>('.panel')]
+  for (const panel of panels) {
+    const form = panel.querySelector<HTMLFormElement>('.panel__bar')
+    const input = form?.querySelector<HTMLInputElement>('input[name="url"]')
+    if (!form || !input) continue
+    const index = Number(form.dataset.slot)
+    applyPanelUrl(panel, index, normalizeUrl(input.value))
+  }
+}
+
+function clearAllPanels() {
+  const panels = [...app.querySelectorAll<HTMLElement>('.panel')]
+  for (const panel of panels) {
+    const index = Number(panel.dataset.slot)
+    applyPanelUrl(panel, index, '')
+  }
+}
+
 function toggleFullscreen() {
   const shell = app.querySelector<HTMLElement>('.grid-shell')
   if (!shell) return
@@ -113,6 +132,60 @@ function toggleFullscreen() {
       // Fullscreen may be blocked; F11 still works at browser level.
     })
   }
+}
+
+let moreMenuAbort: AbortController | null = null
+
+function bindMoreMenu() {
+  moreMenuAbort?.abort()
+  moreMenuAbort = new AbortController()
+  const { signal } = moreMenuAbort
+
+  const menu = app.querySelector<HTMLElement>('.toolbar__more')
+  const trigger = app.querySelector<HTMLButtonElement>('#btn-more')
+  const panel = app.querySelector<HTMLElement>('#toolbar-more-menu')
+  const clearBtn = app.querySelector<HTMLButtonElement>('#btn-clear-all')
+  if (!menu || !trigger || !panel || !clearBtn) return
+
+  const setOpen = (open: boolean) => {
+    menu.classList.toggle('is-open', open)
+    trigger.setAttribute('aria-expanded', String(open))
+    panel.hidden = !open
+  }
+
+  trigger.addEventListener(
+    'click',
+    (event) => {
+      event.stopPropagation()
+      setOpen(panel.hidden)
+    },
+    { signal },
+  )
+
+  clearBtn.addEventListener(
+    'click',
+    () => {
+      clearAllPanels()
+      setOpen(false)
+    },
+    { signal },
+  )
+
+  document.addEventListener(
+    'click',
+    (event) => {
+      if (!menu.contains(event.target as Node)) setOpen(false)
+    },
+    { signal },
+  )
+
+  document.addEventListener(
+    'keydown',
+    (event) => {
+      if (event.key === 'Escape') setOpen(false)
+    },
+    { signal },
+  )
 }
 
 function layoutPreview(count: SlotCount): string {
@@ -130,7 +203,7 @@ function renderChoose() {
         <h1>Quantas telas?</h1>
         <p class="lede">Escolha quantos jogos quer ver ao mesmo tempo.</p>
         <div class="chooser__options" role="group" aria-label="Número de telas">
-          ${([2, 3, 4] as const)
+          ${([2, 3, 4, 8, 16] as const)
             .map(
               (count) => `
             <button type="button" class="chooser__card" data-count="${count}">
@@ -163,6 +236,7 @@ function renderGrid() {
   app.innerHTML = `
     <div class="grid-shell">
       <div class="toolbar" role="toolbar" aria-label="Controles">
+        <button type="button" class="btn btn--load" id="btn-open-all">Abrir todos</button>
         <button type="button" class="btn btn--ghost" id="btn-layout">Telas</button>
         ${
           slotCount === 3
@@ -172,6 +246,24 @@ function renderGrid() {
             : ''
         }
         <button type="button" class="btn btn--ghost" id="btn-fullscreen">Tela cheia</button>
+        <div class="toolbar__more">
+          <button
+            type="button"
+            class="btn btn--ghost btn--icon"
+            id="btn-more"
+            aria-label="Mais opções"
+            aria-haspopup="menu"
+            aria-expanded="false"
+            aria-controls="toolbar-more-menu"
+          >
+            <span aria-hidden="true">⋯</span>
+          </button>
+          <div class="toolbar__menu" id="toolbar-more-menu" role="menu" hidden>
+            <button type="button" class="toolbar__menu-item" id="btn-clear-all" role="menuitem">
+              Limpar todos
+            </button>
+          </div>
+        </div>
       </div>
       <div class="grid ${gridModifier}" id="watch-grid">
         ${urls
@@ -208,12 +300,20 @@ function renderGrid() {
     }
   })
 
+  app.querySelector('#btn-open-all')!.addEventListener('click', () => {
+    openAllPanels()
+  })
+
   app.querySelector('#btn-fullscreen')!.addEventListener('click', () => {
     toggleFullscreen()
   })
+
+  bindMoreMenu()
 }
 
 function render() {
+  moreMenuAbort?.abort()
+  moreMenuAbort = null
   if (view === 'choose') {
     renderChoose()
   } else {

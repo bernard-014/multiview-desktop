@@ -186,7 +186,7 @@ body.is-grid {
 
 .chooser__options {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
   gap: 0.85rem;
 }
 
@@ -256,6 +256,16 @@ body.is-grid {
   grid-template-rows: 1fr 1fr;
 }
 
+.chooser__preview--8 {
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: 1fr 1fr;
+}
+
+.chooser__preview--16 {
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+}
+
 .chooser__count {
   font-family: 'Neuton', serif;
   font-weight: 700;
@@ -286,29 +296,77 @@ body.is-grid {
   z-index: 30;
   display: flex;
   gap: 0.45rem;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.2s ease, transform 0.2s ease;
-  pointer-events: none;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
 }
 
-.grid-shell:hover .toolbar,
-.grid-shell:focus-within .toolbar {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
+.toolbar__more {
+  position: relative;
+}
+
+.btn--icon {
+  min-width: 2.35rem;
+  padding-left: 0.55rem;
+  padding-right: 0.55rem;
+  font-size: 1.35rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.toolbar__menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.4rem);
+  min-width: 10.5rem;
+  padding: 0.35rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: rgba(7, 26, 20, 0.96);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  display: none;
+  gap: 0.2rem;
+}
+
+.toolbar__more.is-open .toolbar__menu {
+  display: grid;
+}
+
+.toolbar__menu[hidden] {
+  display: none !important;
+}
+
+.grid-shell:has(.grid--3) .toolbar__menu {
+  bottom: auto;
+  top: calc(100% + 0.4rem);
+}
+
+.toolbar__menu-item {
+  appearance: none;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.88rem;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  transition: background 0.15s ease;
+}
+
+.toolbar__menu-item:hover,
+.toolbar__menu-item:focus-visible {
+  background: rgba(18, 80, 60, 0.85);
+  outline: none;
 }
 
 /* 3 telas: toolbar no topo direito — evita os controles do vídeo embaixo */
 .grid-shell:has(.grid--3) .toolbar {
   top: 0.65rem;
   bottom: auto;
-  transform: translateY(-4px);
-}
-
-.grid-shell:has(.grid--3):hover .toolbar,
-.grid-shell:has(.grid--3):focus-within .toolbar {
-  transform: translateY(0);
 }
 
 .grid {
@@ -355,6 +413,18 @@ body.is-grid {
 .grid--4 {
   grid-template-columns: 1fr 1fr;
   grid-template-rows: 1fr 1fr;
+}
+
+/* 8 telas: grade 4×2 */
+.grid--8 {
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: 1fr 1fr;
+}
+
+/* 16 telas: grade 4×4 */
+.grid--16 {
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: repeat(4, 1fr);
 }
 
 .panel {
@@ -480,6 +550,24 @@ body.is-grid {
   color: var(--ink);
 }
 
+@media (max-width: 1100px) {
+  .grid--8 {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(4, 1fr);
+  }
+
+  .grid--16 {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(8, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .chooser__options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 720px) {
   .chooser__options {
     grid-template-columns: 1fr;
@@ -487,7 +575,9 @@ body.is-grid {
 
   .grid--2,
   .grid--3,
-  .grid--4 {
+  .grid--4,
+  .grid--8,
+  .grid--16 {
     grid-template-columns: 1fr;
     grid-template-rows: none;
     height: auto;
@@ -514,6 +604,14 @@ body.is-grid {
 
   .grid--4 {
     grid-auto-rows: minmax(28svh, 1fr);
+  }
+
+  .grid--8 {
+    grid-auto-rows: minmax(22svh, 1fr);
+  }
+
+  .grid--16 {
+    grid-auto-rows: minmax(18svh, 1fr);
   }
 
   .grid-shell {
