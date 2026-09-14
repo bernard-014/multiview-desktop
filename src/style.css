@@ -76,8 +76,9 @@ body.is-grid {
   color: var(--ink);
   border: 1px solid var(--line);
   backdrop-filter: blur(8px);
-  padding: 0.45rem 0.85rem;
-  font-size: 0.9rem;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
 }
 
 .btn--ghost:hover {
@@ -88,8 +89,9 @@ body.is-grid {
   flex-shrink: 0;
   background: var(--accent);
   color: var(--accent-ink);
-  padding: 0.4rem 0.75rem;
-  font-size: 0.82rem;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
 }
 
 .btn--load:hover {
@@ -295,7 +297,8 @@ body.is-grid {
   right: 0.65rem;
   z-index: 30;
   display: flex;
-  gap: 0.45rem;
+  align-items: center;
+  gap: 0.65rem;
   opacity: 1;
   transform: none;
   pointer-events: auto;
@@ -306,27 +309,31 @@ body.is-grid {
 }
 
 .btn--icon {
-  min-width: 2.35rem;
-  padding-left: 0.55rem;
-  padding-right: 0.55rem;
-  font-size: 1.35rem;
+  width: 2.15rem;
+  min-width: 2.15rem;
+  height: 2.15rem;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  font-size: 1.25rem;
   line-height: 1;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .toolbar__menu {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 0.4rem);
-  min-width: 10.5rem;
-  padding: 0.35rem;
-  border-radius: 10px;
+  bottom: calc(100% + 0.35rem);
+  width: max-content;
+  min-width: 0;
+  padding: 0.2rem;
+  border-radius: 8px;
   border: 1px solid var(--line);
   background: rgba(7, 26, 20, 0.96);
   backdrop-filter: blur(12px);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
   display: none;
-  gap: 0.2rem;
+  gap: 0;
 }
 
 .toolbar__more.is-open .toolbar__menu {
@@ -339,21 +346,23 @@ body.is-grid {
 
 .grid-shell:has(.grid--3) .toolbar__menu {
   bottom: auto;
-  top: calc(100% + 0.4rem);
+  top: calc(100% + 0.35rem);
 }
 
 .toolbar__menu-item {
   appearance: none;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   background: transparent;
   color: var(--ink);
   cursor: pointer;
   font: inherit;
   font-weight: 600;
-  font-size: 0.88rem;
+  font-size: 0.82rem;
+  line-height: 1.2;
   text-align: left;
-  padding: 0.55rem 0.7rem;
+  white-space: nowrap;
+  padding: 0.4rem 0.65rem;
   transition: background 0.15s ease;
 }
 
