@@ -134,7 +134,7 @@ function renderChoose() {
             <button type="button" class="chooser__card" data-count="${count}">
               ${layoutPreview(count)}
               <span class="chooser__count">${count}</span>
-              <span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span>
+              <span class="chooser__label">telas</span>
             </button>
           `,
             )
