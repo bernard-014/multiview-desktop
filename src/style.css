@@ -96,6 +96,20 @@ body.is-grid {
   filter: brightness(1.05);
 }
 
+.btn--clear {
+  flex-shrink: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  border: 1px solid var(--line);
+  padding: 0.4rem 0.75rem;
+  font-size: 0.82rem;
+}
+
+.btn--clear:hover {
+  color: var(--ink);
+  background: rgba(18, 80, 60, 0.55);
+}
+
 .brand {
   margin: 0 0 0.75rem;
   font-family: 'Neuton', serif;

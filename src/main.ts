@@ -45,6 +45,7 @@ function urlFormHtml(index: number, url: string): string {
         value="${escapeAttr(url)}"
       />
       <button type="submit" class="btn btn--load" aria-label="Abrir link">Abrir</button>
+      <button type="button" class="btn btn--clear" data-clear aria-label="Limpar link">Limpar</button>
     </form>
   `
 }
@@ -73,6 +74,13 @@ function panelInnerHtml(index: number, url: string): string {
   `
 }
 
+function applyPanelUrl(panel: HTMLElement, index: number, next: string) {
+  urls[index] = next
+  panel.classList.toggle('panel--empty', !next)
+  panel.innerHTML = panelInnerHtml(index, next)
+  bindPanelForm(panel)
+}
+
 function bindPanelForm(panel: HTMLElement) {
   const form = panel.querySelector<HTMLFormElement>('.panel__bar')
   if (!form) return
@@ -82,12 +90,14 @@ function bindPanelForm(panel: HTMLElement) {
     const index = Number(form.dataset.slot)
     const input = form.elements.namedItem('url') as HTMLInputElement
     const next = normalizeUrl(input.value)
-    urls[index] = next
-    input.value = next
-    panel.classList.toggle('panel--empty', !next)
-    panel.innerHTML = panelInnerHtml(index, next)
-    bindPanelForm(panel)
+    applyPanelUrl(panel, index, next)
     panel.querySelector<HTMLInputElement>('input')?.blur()
+  })
+
+  form.querySelector('[data-clear]')?.addEventListener('click', () => {
+    const index = Number(form.dataset.slot)
+    applyPanelUrl(panel, index, '')
+    panel.querySelector<HTMLInputElement>('input')?.focus()
   })
 }
 
