@@ -1,87 +1,59 @@
 import './style.css'
+import { normalizeUrl } from './routing'
+import {
+  buildLayoutTree,
+  calculateLayout,
+  swapPanels,
+  updateSplitRatio,
+  type Bounds,
+  type LayoutMode,
+  type LayoutNode,
+  type PanelId,
+  type SplitDirection,
+} from './layout'
 
 type View = 'choose' | 'grid'
-type SlotCount = 2 | 3 | 4 | 8 | 16
-type Layout3 = 'equal' | 'focus'
+type Panel = { id: PanelId; url: string }
+type LayoutSnapshot = {
+  panels: Panel[]
+  highlighted: PanelId[]
+  tree: LayoutNode
+  mode: LayoutMode
+}
 
 const app = document.querySelector<HTMLDivElement>('#app')!
+const APP_VERSION = 'v1.02'
+const MIN_PANELS = 1
+const MAX_PANELS = 16
+const HISTORY_LIMIT = 24
+const SPLIT_KEYBOARD_STEP = 0.03
 
 let view: View = 'choose'
-let slotCount: SlotCount = 4
-let layout3: Layout3 = 'equal'
-let urls: string[] = []
+let panelSerial = 1
+let panels: Panel[] = []
+let highlighted = new Set<PanelId>()
+let layoutMode: LayoutMode = 'equal'
+let layoutTree: LayoutNode
+let editorOpen = false
+let moveSource: PanelId | null = null
+let history: LayoutSnapshot[] = []
+let nativeFullscreen = false
+let layoutSyncFrame: number | null = null
+let lastChromeInteractive: boolean | null = null
+let currentSplitBounds = new Map<string, { direction: SplitDirection; bounds: Bounds; ratio: number }>()
 
-const YT_ID_RE = /^[\w-]{11}$/
-
-function extractIframeSrc(value: string): string | null {
-  const match = value.match(/<iframe\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/i)
-  return match?.[1]?.trim() || null
+function createPanel(): Panel {
+  return { id: `panel-${panelSerial++}`, url: '' }
 }
 
-function youtubeVideoId(urlString: string): string | null {
-  let url: URL
-  try {
-    url = new URL(urlString)
-  } catch {
-    return null
-  }
-
-  const host = url.hostname.replace(/^www\./i, '').toLowerCase()
-  const isYoutube =
-    host === 'youtu.be' ||
-    host === 'youtube.com' ||
-    host === 'm.youtube.com' ||
-    host === 'youtube-nocookie.com'
-
-  if (!isYoutube) return null
-
-  if (host === 'youtu.be') {
-    const id = url.pathname.split('/').filter(Boolean)[0] ?? ''
-    return YT_ID_RE.test(id) ? id : null
-  }
-
-  const pathMatch = url.pathname.match(/^\/(embed|shorts|live|v)\/([\w-]{11})(?:\/|$)/i)
-  if (pathMatch) return pathMatch[2]
-
-  if (/^\/watch\/?$/i.test(url.pathname)) {
-    const id = url.searchParams.get('v') ?? ''
-    return YT_ID_RE.test(id) ? id : null
-  }
-
-  return null
+function initializePanels(count: number) {
+  panels = Array.from({ length: count }, createPanel)
+  layoutTree = buildLayoutTree(panels.map((panel) => panel.id))
 }
 
-function isYouTubeEmbed(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase()
-    return (
-      (host === 'youtube.com' || host === 'youtube-nocookie.com') &&
-      /^\/embed\/[\w-]{11}(?:\/|$)/i.test(parsed.pathname)
-    )
-  } catch {
-    return false
-  }
-}
+initializePanels(4)
 
-function normalizeUrl(value: string): string {
-  const trimmed = value.trim()
-  if (!trimmed) return ''
-
-  const fromIframe = extractIframeSrc(trimmed)
-  let candidate = fromIframe ?? trimmed
-
-  if (!/^https?:\/\//i.test(candidate)) {
-    candidate = `https://${candidate}`
-  }
-
-  const videoId = youtubeVideoId(candidate)
-  if (videoId) return `https://www.youtube.com/embed/${videoId}`
-
-  return candidate
-}
-
-function escapeAttr(value: string): string {
+function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
     .replaceAll('"', '&quot;')
@@ -89,30 +61,153 @@ function escapeAttr(value: string): string {
     .replaceAll('>', '&gt;')
 }
 
-function setSlotCount(count: SlotCount) {
-  const next = Array.from({ length: count }, (_, i) => urls[i] ?? '')
-  urls = next
-  slotCount = count
+function panelIndex(id: PanelId) {
+  return panels.findIndex((panel) => panel.id === id)
 }
 
-function urlFormHtml(index: number, url: string, options: { withClose?: boolean } = {}): string {
+function panelById(id: PanelId) {
+  return panels.find((panel) => panel.id === id)
+}
+
+function viewportAspect() {
+  const stage = app.querySelector<HTMLElement>('#layout-stage')
+  const rect = stage?.getBoundingClientRect()
+  if (rect && rect.width > 0 && rect.height > 0) return rect.width / rect.height
+  return window.innerWidth > 0 && window.innerHeight > 0 ? window.innerWidth / window.innerHeight : 16 / 9
+}
+
+function cloneSnapshot(): LayoutSnapshot {
+  return {
+    panels: panels.map((panel) => ({ ...panel })),
+    highlighted: [...highlighted],
+    tree: layoutTree,
+    mode: layoutMode,
+  }
+}
+
+function pushHistory() {
+  history = [...history.slice(-(HISTORY_LIMIT - 1)), cloneSnapshot()]
+}
+
+function restoreSnapshot(snapshot: LayoutSnapshot) {
+  panels = snapshot.panels.map((panel) => ({ ...panel }))
+  highlighted = new Set(snapshot.highlighted)
+  layoutTree = snapshot.tree
+  layoutMode = snapshot.mode
+  moveSource = null
+  render()
+}
+
+function undo() {
+  const previous = history.at(-1)
+  if (!previous) return
+  history = history.slice(0, -1)
+  restoreSnapshot(previous)
+}
+
+function buildCurrentLayout(mode: LayoutMode = layoutMode) {
+  layoutMode = mode
+  const activeHighlights = mode === 'equal' ? new Set<PanelId>() : highlighted
+  layoutTree = buildLayoutTree(panels.map((panel) => panel.id), activeHighlights, viewportAspect())
+}
+
+function setPanelCount(count: number, options: { recordHistory?: boolean } = {}) {
+  const nextCount = Math.max(MIN_PANELS, Math.min(MAX_PANELS, Math.round(count)))
+  if (nextCount === panels.length) return
+  if (options.recordHistory !== false) pushHistory()
+
+  if (nextCount > panels.length) {
+    panels = [...panels, ...Array.from({ length: nextCount - panels.length }, createPanel)]
+  } else {
+    const removed = new Set(panels.slice(nextCount).map((panel) => panel.id))
+    panels = panels.slice(0, nextCount)
+    highlighted = new Set([...highlighted].filter((id) => !removed.has(id)))
+  }
+
+  buildCurrentLayout(layoutMode === 'manual' ? 'auto' : layoutMode)
+  if (view === 'grid') renderGrid()
+}
+
+function selectCount(count: number) {
+  setPanelCount(count, { recordHistory: false })
+  view = 'grid'
+  editorOpen = false
+  render()
+}
+
+function setEditor(open: boolean) {
+  editorOpen = open
+  moveSource = null
+  app.querySelector('.grid-shell')?.classList.toggle('is-editor-open', open)
+  app.querySelector('#layout-stage')?.classList.toggle('is-editing', open)
+  const button = app.querySelector<HTMLButtonElement>('#btn-organize')
+  if (button) button.textContent = open ? 'Concluir' : 'Organizar'
+  scheduleSyncLayout()
+}
+
+function toggleHighlight(id: PanelId) {
+  if (!panelById(id)) return
+  pushHistory()
+  if (highlighted.has(id)) highlighted.delete(id)
+  else highlighted.add(id)
+  buildCurrentLayout(highlighted.size > 0 ? 'auto' : 'equal')
+  renderGrid()
+}
+
+function makeEqual() {
+  pushHistory()
+  highlighted.clear()
+  buildCurrentLayout('equal')
+  renderGrid()
+}
+
+function organizeAutomatically() {
+  pushHistory()
+  buildCurrentLayout(highlighted.size > 0 ? 'auto' : 'equal')
+  renderGrid()
+}
+
+function swapPanelPositions(firstId: PanelId, secondId: PanelId) {
+  if (firstId === secondId || !panelById(firstId) || !panelById(secondId)) return
+  pushHistory()
+  layoutTree = swapPanels(layoutTree, firstId, secondId)
+  layoutMode = 'manual'
+  moveSource = null
+  renderGrid()
+}
+
+function applyPanelUrl(id: PanelId, next: string) {
+  const panel = panelById(id)
+  if (!panel) return
+  panel.url = next
+  renderGrid()
+}
+
+function openAllPanels() {
+  panels = panels.map((panel) => {
+    const input = app.querySelector<HTMLInputElement>(`[data-panel-id="${CSS.escape(panel.id)}"] input[name="url"]`)
+    return { ...panel, url: input ? normalizeUrl(input.value) : panel.url }
+  })
+  renderGrid()
+}
+
+function clearAllPanels() {
+  pushHistory()
+  panels = panels.map((panel) => ({ ...panel, url: '' }))
+  renderGrid()
+}
+
+function urlFormHtml(panel: Panel, options: { withClose?: boolean } = {}): string {
+  const index = panelIndex(panel.id)
   const closeBtn = options.withClose
-    ? `<button type="button" class="btn btn--ghost btn--icon panel__close" data-close aria-label="Fechar barra de URL"><span aria-hidden="true">×</span></button>`
+    ? '<button type="button" class="btn btn--ghost btn--icon panel__close" data-close aria-label="Fechar edição"><span aria-hidden="true">×</span></button>'
     : ''
 
   return `
-    <form class="panel__bar" data-slot="${index}" novalidate>
-      <label class="visually-hidden" for="url-${index}">URL do jogo ${index + 1}</label>
-      <input
-        id="url-${index}"
-        type="url"
-        name="url"
-        inputmode="url"
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="Cole link YouTube ou URL e pressione Enter"
-        value="${escapeAttr(url)}"
-      />
+    <form class="panel__bar" data-panel-form data-panel-id="${escapeHtml(panel.id)}" novalidate>
+      <label class="visually-hidden" for="url-${escapeHtml(panel.id)}">URL do jogo ${index + 1}</label>
+      <input id="url-${escapeHtml(panel.id)}" type="url" name="url" inputmode="url" autocomplete="off" spellcheck="false"
+        placeholder="Cole link YouTube ou URL e pressione Enter" value="${escapeHtml(panel.url)}" />
       <button type="submit" class="btn btn--load" aria-label="Abrir link">Abrir</button>
       <button type="button" class="btn btn--clear" data-clear aria-label="Limpar link">Limpar</button>
       ${closeBtn}
@@ -120,121 +215,282 @@ function urlFormHtml(index: number, url: string, options: { withClose?: boolean 
   `
 }
 
-function panelInnerHtml(index: number, url: string): string {
-  if (!url) {
+function panelActionsHtml(panel: Panel): string {
+  const isHighlighted = highlighted.has(panel.id)
+  return `
+    <div class="panel__controls" aria-label="Ações do jogo ${panelIndex(panel.id) + 1}">
+      <button type="button" class="btn btn--ghost btn--icon" data-highlight aria-pressed="${isHighlighted}" aria-label="${isHighlighted ? 'Remover destaque' : 'Destacar jogo'}" title="${isHighlighted ? 'Remover destaque' : 'Destacar jogo'}">${isHighlighted ? '★' : '☆'}</button>
+      <button type="button" class="btn btn--ghost btn--icon" data-move aria-label="Mover jogo" title="Mover jogo">↔</button>
+      ${panel.url ? '<button type="button" class="btn btn--ghost btn--icon" data-edit aria-label="Editar URL" title="Editar URL">✎</button>' : ''}
+    </div>
+  `
+}
+
+function panelInnerHtml(panel: Panel): string {
+  if (!panel.url) {
     return `
+      ${panelActionsHtml(panel)}
       <div class="panel__empty">
-        <p class="panel__slot">Jogo ${index + 1}</p>
-        ${urlFormHtml(index, url)}
+        <p class="panel__slot">Jogo ${panelIndex(panel.id) + 1}</p>
+        ${urlFormHtml(panel)}
       </div>
     `
   }
 
-  const referrerPolicy = isYouTubeEmbed(url)
-    ? 'strict-origin-when-cross-origin'
-    : 'no-referrer'
-
   return `
-    <button type="button" class="btn btn--ghost btn--icon panel__edit" data-edit aria-label="Editar URL">
-      <span aria-hidden="true">✎</span>
-    </button>
+    ${panelActionsHtml(panel)}
     <div class="panel__overlay">
-      ${urlFormHtml(index, url, { withClose: true })}
+      ${urlFormHtml(panel, { withClose: true })}
     </div>
-    <iframe
-      src="${escapeAttr(url)}"
-      title="Jogo ${index + 1}"
-      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-      allowfullscreen
-      referrerpolicy="${referrerPolicy}"
-    ></iframe>
+    <div class="panel__stage" data-stage aria-hidden="true"></div>
   `
+}
+
+function splitHandlesHtml(): string {
+  return [...calculateLayout(layoutTree).splits]
+    .map(
+      (split) => `
+        <button type="button" class="split-handle split-handle--${split.direction}" data-split-id="${escapeHtml(split.id)}" role="separator"
+          aria-orientation="${split.direction === 'row' ? 'vertical' : 'horizontal'}" aria-label="Redimensionar divisão" tabindex="0"></button>
+      `,
+    )
+    .join('')
+}
+
+function renderPanelElements() {
+  const stage = app.querySelector<HTMLElement>('#layout-stage')
+  if (!stage) return
+  stage.dataset.layoutMode = layoutMode
+  const result = calculateLayout(layoutTree)
+  const rects = new Map(result.rects.map((rect) => [rect.panelId, rect]))
+  currentSplitBounds = new Map(
+    result.splits.map((split) => [split.id, { direction: split.direction, bounds: split.bounds, ratio: split.ratio }]),
+  )
+
+  for (const panelElement of stage.querySelectorAll<HTMLElement>('.panel')) {
+    const rect = rects.get(panelElement.dataset.panelId ?? '')
+    if (!rect) continue
+    panelElement.style.left = `${rect.x * 100}%`
+    panelElement.style.top = `${rect.y * 100}%`
+    panelElement.style.width = `${rect.width * 100}%`
+    panelElement.style.height = `${rect.height * 100}%`
+  }
+
+  for (const handle of stage.querySelectorAll<HTMLElement>('.split-handle')) {
+    const split = currentSplitBounds.get(handle.dataset.splitId ?? '')
+    if (!split) continue
+    const { bounds, direction, ratio } = split
+    if (direction === 'row') {
+      handle.style.left = `${(bounds.x + bounds.width * ratio) * 100}%`
+      handle.style.top = `${bounds.y * 100}%`
+      handle.style.height = `${bounds.height * 100}%`
+      handle.style.width = '12px'
+    } else {
+      handle.style.left = `${bounds.x * 100}%`
+      handle.style.top = `${(bounds.y + bounds.height * ratio) * 100}%`
+      handle.style.width = `${bounds.width * 100}%`
+      handle.style.height = '12px'
+    }
+    handle.setAttribute('aria-valuenow', String(Math.round(ratio * 100)))
+  }
+  scheduleSyncLayout()
 }
 
 function setPanelEditing(panel: HTMLElement, editing: boolean) {
   panel.classList.toggle('is-editing', editing)
-  if (!editing) return
-  const input = panel.querySelector<HTMLInputElement>('.panel__overlay input[name="url"]')
-  input?.focus()
-  input?.select()
+  if (editing) {
+    const input = panel.querySelector<HTMLInputElement>('.panel__overlay input[name="url"]')
+    input?.focus()
+    input?.select()
+  }
+  scheduleSyncLayout()
 }
 
-function applyPanelUrl(panel: HTMLElement, index: number, next: string) {
-  urls[index] = next
-  panel.classList.toggle('panel--empty', !next)
-  panel.classList.remove('is-editing')
-  panel.innerHTML = panelInnerHtml(index, next)
-  bindPanelForm(panel)
-}
+function bindPanelForm(panelElement: HTMLElement) {
+  const id = panelElement.dataset.panelId
+  if (!id) return
+  const form = panelElement.querySelector<HTMLFormElement>('[data-panel-form]')
+  form?.addEventListener('pointerenter', () => setChromeInteractive(true))
+  form?.addEventListener('pointerdown', () => setChromeInteractive(true))
 
-function bindPanelForm(panel: HTMLElement) {
-  const form = panel.querySelector<HTMLFormElement>('.panel__bar')
-  if (!form) return
-
-  panel.querySelector('[data-edit]')?.addEventListener('click', () => {
-    setPanelEditing(panel, true)
+  panelElement.querySelector('[data-edit]')?.addEventListener('click', () => setPanelEditing(panelElement, true))
+  panelElement.querySelector('[data-highlight]')?.addEventListener('click', (event) => {
+    event.stopPropagation()
+    toggleHighlight(id)
+  })
+  panelElement.querySelector('[data-move]')?.addEventListener('click', (event) => {
+    event.stopPropagation()
+    moveSource = moveSource === id ? null : id
+    renderGrid()
   })
 
-  form.addEventListener('submit', (event) => {
+  form?.addEventListener('submit', (event) => {
     event.preventDefault()
-    const index = Number(form.dataset.slot)
     const input = form.elements.namedItem('url') as HTMLInputElement
-    const next = normalizeUrl(input.value)
-    applyPanelUrl(panel, index, next)
+    applyPanelUrl(id, normalizeUrl(input.value))
   })
-
-  form.querySelector('[data-clear]')?.addEventListener('click', () => {
-    const index = Number(form.dataset.slot)
-    applyPanelUrl(panel, index, '')
-    panel.querySelector<HTMLInputElement>('input')?.focus()
-  })
-
-  form.querySelector('[data-close]')?.addEventListener('click', () => {
-    setPanelEditing(panel, false)
-  })
-
-  form.addEventListener('keydown', (event) => {
+  form?.querySelector('[data-clear]')?.addEventListener('click', () => applyPanelUrl(id, ''))
+  form?.querySelector('[data-close]')?.addEventListener('click', () => setPanelEditing(panelElement, false))
+  form?.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
     event.preventDefault()
-    setPanelEditing(panel, false)
+    setPanelEditing(panelElement, false)
   })
 }
 
-function openAllPanels() {
-  const panels = [...app.querySelectorAll<HTMLElement>('.panel')]
-  for (const panel of panels) {
-    const form = panel.querySelector<HTMLFormElement>('.panel__bar')
-    const input = form?.querySelector<HTMLInputElement>('input[name="url"]')
-    if (!form || !input) continue
-    const index = Number(form.dataset.slot)
-    applyPanelUrl(panel, index, normalizeUrl(input.value))
+function bindSplitHandle(handle: HTMLElement) {
+  const splitId = handle.dataset.splitId
+  if (!splitId) return
+  let dragging = false
+
+  const adjustFromPointer = (clientX: number, clientY: number) => {
+    const stage = app.querySelector<HTMLElement>('#layout-stage')
+    const split = currentSplitBounds.get(splitId)
+    if (!stage || !split) return
+    const stageRect = stage.getBoundingClientRect()
+    const value = split.direction === 'row'
+      ? (clientX - stageRect.left - split.bounds.x * stageRect.width) / (split.bounds.width * stageRect.width)
+      : (clientY - stageRect.top - split.bounds.y * stageRect.height) / (split.bounds.height * stageRect.height)
+    layoutTree = updateSplitRatio(layoutTree, splitId, value)
+    layoutMode = 'manual'
+    renderPanelElements()
   }
+
+  handle.addEventListener('pointerdown', (event) => {
+    if (!editorOpen) return
+    event.preventDefault()
+    pushHistory()
+    dragging = true
+    handle.setPointerCapture(event.pointerId)
+    setChromeInteractive(true)
+    adjustFromPointer(event.clientX, event.clientY)
+  })
+  handle.addEventListener('pointermove', (event) => {
+    if (dragging) adjustFromPointer(event.clientX, event.clientY)
+  })
+  const finishDrag = (event: PointerEvent) => {
+    if (!dragging) return
+    dragging = false
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId)
+    scheduleSyncLayout()
+  }
+  handle.addEventListener('pointerup', finishDrag)
+  handle.addEventListener('pointercancel', finishDrag)
+  handle.addEventListener('keydown', (event) => {
+    if (!editorOpen) return
+    const split = currentSplitBounds.get(splitId)
+    if (!split) return
+    let delta = 0
+    if (split.direction === 'row' && event.key === 'ArrowLeft') delta = -SPLIT_KEYBOARD_STEP
+    if (split.direction === 'row' && event.key === 'ArrowRight') delta = SPLIT_KEYBOARD_STEP
+    if (split.direction === 'column' && event.key === 'ArrowUp') delta = -SPLIT_KEYBOARD_STEP
+    if (split.direction === 'column' && event.key === 'ArrowDown') delta = SPLIT_KEYBOARD_STEP
+    if (!delta) return
+    event.preventDefault()
+    pushHistory()
+    layoutTree = updateSplitRatio(layoutTree, splitId, split.ratio + delta)
+    layoutMode = 'manual'
+    renderPanelElements()
+  })
 }
 
-function clearAllPanels() {
-  const panels = [...app.querySelectorAll<HTMLElement>('.panel')]
-  for (const panel of panels) {
-    const index = Number(panel.dataset.slot)
-    applyPanelUrl(panel, index, '')
-  }
+function isFullscreenActive() {
+  return window.quadra ? nativeFullscreen : document.fullscreenElement !== null
+}
+
+function updateFullscreenButton() {
+  const button = app.querySelector<HTMLButtonElement>('#btn-fullscreen')
+  if (button) button.textContent = isFullscreenActive() ? 'Minimizar' : 'Tela Cheia'
 }
 
 function toggleFullscreen() {
   const shell = app.querySelector<HTMLElement>('.grid-shell')
   if (!shell) return
-  if (document.fullscreenElement) {
-    void document.exitFullscreen()
-  } else {
-    void shell.requestFullscreen().catch(() => {
-      // Fullscreen may be blocked; F11 still works at browser level.
-    })
+  if (window.quadra) {
+    nativeFullscreen = !nativeFullscreen
+    updateFullscreenButton()
+    window.quadra.setFullscreen(nativeFullscreen)
+    scheduleSyncLayout()
+    return
   }
+  if (document.fullscreenElement) void document.exitFullscreen()
+  else void shell.requestFullscreen().catch(() => {})
 }
 
-let moreMenuAbort: AbortController | null = null
-let toolbarAbort: AbortController | null = null
-let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null
+function confirmAction(message: string, confirmLabel = 'Confirmar'): Promise<boolean> {
+  return new Promise((resolve) => {
+    document.querySelector('.confirm')?.remove()
+    const backdrop = document.createElement('div')
+    backdrop.className = 'confirm'
+    backdrop.innerHTML = `<div class="confirm__dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
+      <p id="confirm-title" class="confirm__message">${escapeHtml(message)}</p>
+      <div class="confirm__actions"><button type="button" class="btn btn--ghost" data-cancel>Cancelar</button>
+      <button type="button" class="btn btn--load" data-ok>${escapeHtml(confirmLabel)}</button></div>
+    </div>`
+    const finish = (value: boolean) => {
+      document.removeEventListener('keydown', onKey)
+      backdrop.remove()
+      resolve(value)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') finish(false)
+    }
+    backdrop.querySelector('[data-cancel]')!.addEventListener('click', () => finish(false))
+    backdrop.querySelector('[data-ok]')!.addEventListener('click', () => finish(true))
+    backdrop.addEventListener('click', (event) => { if (event.target === backdrop) finish(false) })
+    document.addEventListener('keydown', onKey)
+    document.body.appendChild(backdrop)
+    backdrop.querySelector<HTMLButtonElement>('[data-ok]')?.focus()
+  })
+}
 
+function setChromeInteractive(interactive: boolean) {
+  if (lastChromeInteractive === interactive) return
+  lastChromeInteractive = interactive
+  window.quadra?.setChromeInteractive(interactive)
+}
+
+function syncLayout() {
+  if (view === 'choose') {
+    setChromeInteractive(true)
+    window.quadra?.setLayout({ view: 'choose', panelCount: panels.length, mode: layoutMode, panels: [] })
+    return
+  }
+  const payloadPanels = panels.flatMap((panel) => {
+    const panelElement = app.querySelector<HTMLElement>(`[data-panel-id="${CSS.escape(panel.id)}"]`)
+    if (!panelElement) return []
+    const stage = panelElement.querySelector<HTMLElement>('[data-stage]')
+    const rect = (stage ?? panelElement).getBoundingClientRect()
+    return [{
+      id: panel.id,
+      url: panel.url,
+      editing: panelElement.classList.contains('is-editing'),
+      bounds: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
+    }]
+  })
+  window.quadra?.setLayout({ view: 'grid', panelCount: panels.length, mode: layoutMode, panels: payloadPanels })
+}
+
+function scheduleSyncLayout() {
+  if (layoutSyncFrame !== null) cancelAnimationFrame(layoutSyncFrame)
+  layoutSyncFrame = requestAnimationFrame(() => {
+    layoutSyncFrame = null
+    syncLayout()
+  })
+}
+
+function updateChromeHitTarget(x: number, y: number) {
+  if (view !== 'grid') {
+    setChromeInteractive(true)
+    return
+  }
+  const target = document.elementFromPoint(x, y)
+  setChromeInteractive(Boolean(target?.closest('.toolbar, .panel__controls, .panel__overlay, .panel--empty, .split-handle, .move-picker, .confirm')))
+}
+
+let toolbarAbort: AbortController | null = null
+let moreMenuAbort: AbortController | null = null
+let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null
 const TOOLBAR_IDLE_MS = 10_000
 
 function clearToolbarHideTimer() {
@@ -248,104 +504,42 @@ function bindToolbarAutoHide() {
   clearToolbarHideTimer()
   toolbarAbort = new AbortController()
   const { signal } = toolbarAbort
-
   const shell = app.querySelector<HTMLElement>('.grid-shell')
   const toolbar = app.querySelector<HTMLElement>('.toolbar')
   const hotzone = app.querySelector<HTMLElement>('.toolbar-hotzone')
-  const more = app.querySelector<HTMLElement>('.toolbar__more')
   if (!shell || !toolbar) return
-
-  const isPinned = () =>
-    Boolean(more?.classList.contains('is-open')) ||
-    (document.activeElement instanceof Node && toolbar.contains(document.activeElement))
-
-  const setVisible = (visible: boolean) => {
-    shell.classList.toggle('is-toolbar-visible', visible)
-  }
-
+  const isPinned = () => document.activeElement instanceof Node && toolbar.contains(document.activeElement)
+  const setVisible = (visible: boolean) => shell.classList.toggle('is-toolbar-visible', visible)
   const scheduleHide = () => {
     clearToolbarHideTimer()
     toolbarHideTimer = setTimeout(() => {
       toolbarHideTimer = null
-      if (isPinned()) return
-      setVisible(false)
+      if (!isPinned()) setVisible(false)
     }, TOOLBAR_IDLE_MS)
   }
-
   const reveal = () => {
     setVisible(true)
-    if (isPinned()) {
-      clearToolbarHideTimer()
-      return
-    }
-    scheduleHide()
+    if (isPinned()) clearToolbarHideTimer()
+    else scheduleHide()
   }
-
-  const pointInShell = (x: number, y: number) => {
+  const inShell = (x: number, y: number) => {
     const rect = shell.getBoundingClientRect()
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
   }
-
-  // document-level so movement over letterboxing / gaps still counts
-  document.addEventListener(
-    'mousemove',
-    (event) => {
-      if (pointInShell(event.clientX, event.clientY)) {
-        reveal()
-        return
-      }
-      if (isPinned()) {
-        setVisible(true)
-        clearToolbarHideTimer()
-        return
-      }
+  document.addEventListener('mousemove', (event) => {
+    if (inShell(event.clientX, event.clientY)) {
+      updateChromeHitTarget(event.clientX, event.clientY)
+      reveal()
+    } else {
+      setChromeInteractive(true)
       setVisible(false)
       clearToolbarHideTimer()
-    },
-    { signal, passive: true },
-  )
-
-  // iframes swallow mousemove; this corner still catches the cursor
+    }
+  }, { signal, passive: true })
   hotzone?.addEventListener('mouseenter', reveal, { signal })
   hotzone?.addEventListener('mousemove', reveal, { signal, passive: true })
-
-  toolbar.addEventListener(
-    'focusin',
-    () => {
-      setVisible(true)
-      clearToolbarHideTimer()
-    },
-    { signal },
-  )
-
-  toolbar.addEventListener(
-    'focusout',
-    () => {
-      requestAnimationFrame(() => {
-        if (isPinned()) {
-          setVisible(true)
-          clearToolbarHideTimer()
-          return
-        }
-        scheduleHide()
-      })
-    },
-    { signal },
-  )
-
-  if (more) {
-    const observer = new MutationObserver(() => {
-      if (isPinned()) {
-        setVisible(true)
-        clearToolbarHideTimer()
-        return
-      }
-      scheduleHide()
-    })
-    observer.observe(more, { attributes: true, attributeFilter: ['class'] })
-    signal.addEventListener('abort', () => observer.disconnect())
-  }
-
+  toolbar.addEventListener('focusin', () => { setVisible(true); clearToolbarHideTimer() }, { signal })
+  toolbar.addEventListener('focusout', () => requestAnimationFrame(() => isPinned() ? setVisible(true) : scheduleHide()), { signal })
   setVisible(false)
 }
 
@@ -353,177 +547,113 @@ function bindMoreMenu() {
   moreMenuAbort?.abort()
   moreMenuAbort = new AbortController()
   const { signal } = moreMenuAbort
-
   const menu = app.querySelector<HTMLElement>('.toolbar__more')
   const trigger = app.querySelector<HTMLButtonElement>('#btn-more')
   const panel = app.querySelector<HTMLElement>('#toolbar-more-menu')
-  const clearBtn = app.querySelector<HTMLButtonElement>('#btn-clear-all')
-  if (!menu || !trigger || !panel || !clearBtn) return
-
+  if (!menu || !trigger || !panel) return
   const setOpen = (open: boolean) => {
     menu.classList.toggle('is-open', open)
     trigger.setAttribute('aria-expanded', String(open))
     panel.hidden = !open
   }
-
-  trigger.addEventListener(
-    'click',
-    (event) => {
-      event.stopPropagation()
-      setOpen(panel.hasAttribute('hidden'))
-    },
-    { signal },
-  )
-
-  clearBtn.addEventListener(
-    'click',
-    () => {
-      clearAllPanels()
-      setOpen(false)
-    },
-    { signal },
-  )
-
-  document.addEventListener(
-    'click',
-    (event) => {
-      if (!menu.contains(event.target as Node)) setOpen(false)
-    },
-    { signal },
-  )
-
-  document.addEventListener(
-    'keydown',
-    (event) => {
-      if (event.key === 'Escape') setOpen(false)
-    },
-    { signal },
-  )
+  trigger.addEventListener('click', (event) => { event.stopPropagation(); setOpen(panel.hasAttribute('hidden')) }, { signal })
+  app.querySelector('#btn-equal')?.addEventListener('click', () => { makeEqual(); setOpen(false) }, { signal })
+  app.querySelector('#btn-auto')?.addEventListener('click', () => { organizeAutomatically(); setOpen(false) }, { signal })
+  app.querySelector('#btn-undo')?.addEventListener('click', () => { undo(); setOpen(false) }, { signal })
+  app.querySelector('#btn-clear-all')?.addEventListener('click', () => { clearAllPanels(); setOpen(false) }, { signal })
+  document.addEventListener('click', (event) => { if (!menu.contains(event.target as Node)) setOpen(false) }, { signal })
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') setOpen(false) }, { signal })
 }
 
-function layoutPreview(count: SlotCount): string {
-  const cells = Array.from({ length: count }, () => '<span></span>').join('')
-  return `<div class="chooser__preview chooser__preview--${count}" aria-hidden="true">${cells}</div>`
+function previewHtml(count: number): string {
+  const ids = Array.from({ length: count }, (_, index) => `preview-${index}`)
+  const tree = buildLayoutTree(ids)
+  return `<div class="chooser__preview">${calculateLayout(tree).rects.map((rect) => `<span style="left:${rect.x * 100}%;top:${rect.y * 100}%;width:${rect.width * 100}%;height:${rect.height * 100}%"></span>`).join('')}</div>`
+}
+
+function layoutModeLabel() {
+  if (layoutMode === 'equal') return 'Todos iguais'
+  if (layoutMode === 'manual') return 'Ajuste manual'
+  return highlighted.size > 0 ? `${highlighted.size} destaque${highlighted.size === 1 ? '' : 's'}` : 'Automático'
 }
 
 function renderChoose() {
   document.body.classList.remove('is-grid')
-  app.innerHTML = `
-    <main class="chooser">
-      <div class="chooser__atmosphere" aria-hidden="true"></div>
-      <div class="chooser__content">
-        <p class="brand">Quadra</p>
-        <h1>Quantas telas?</h1>
-        <p class="lede">Escolha quantos jogos quer ver ao mesmo tempo.</p>
-        <div class="chooser__options" role="group" aria-label="Número de telas">
-          ${([2, 3, 4, 8, 16] as const)
-            .map(
-              (count) => `
-            <button type="button" class="chooser__card" data-count="${count}">
-              ${layoutPreview(count)}
-              <span class="chooser__count">${count}</span>
-              <span class="chooser__label">telas</span>
-            </button>
-          `,
-            )
-            .join('')}
-        </div>
-      </div>
-    </main>
-  `
+  setChromeInteractive(true)
+  app.innerHTML = `<main class="chooser"><div class="chooser__atmosphere" aria-hidden="true"></div><div class="chooser__content">
+    <div class="brand-lockup"><p class="brand">Quadra</p><span class="app-version" aria-label="Versão ${APP_VERSION}">${APP_VERSION}</span></div>
+    <h1>Quantas telas?</h1><p class="lede">Escolha de 1 a 16 jogos para acompanhar ao mesmo tempo.</p>
+    <div class="chooser__options" role="group" aria-label="Número de telas">
+      ${Array.from({ length: MAX_PANELS }, (_, index) => index + 1).map((count) => `<button type="button" class="chooser__card${count === panels.length ? ' is-current' : ''}" data-count="${count}">${previewHtml(count)}<span class="chooser__count">${count}</span><span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span></button>`).join('')}
+    </div>
+  </div></main>`
+  app.querySelectorAll<HTMLButtonElement>('.chooser__card').forEach((button) => button.addEventListener('click', () => selectCount(Number(button.dataset.count))))
+  scheduleSyncLayout()
+}
 
-  app.querySelectorAll<HTMLButtonElement>('.chooser__card').forEach((button) => {
-    button.addEventListener('click', () => {
-      setSlotCount(Number(button.dataset.count) as SlotCount)
-      view = 'grid'
-      render()
-    })
-  })
+function movePickerHtml(): string {
+  if (!moveSource) return ''
+  const sourceIndex = panelIndex(moveSource)
+  return `<div class="move-picker" role="dialog" aria-label="Escolher posição"><div class="move-picker__header"><strong>Mover jogo ${sourceIndex + 1}</strong><button type="button" class="btn btn--ghost btn--icon" data-move-cancel aria-label="Cancelar">×</button></div><p>Escolha o jogo com que deseja trocar de posição.</p><div class="move-picker__options">${panels.filter((panel) => panel.id !== moveSource).map((panel) => `<button type="button" class="btn btn--ghost" data-move-to="${escapeHtml(panel.id)}">Jogo ${panelIndex(panel.id) + 1}</button>`).join('')}</div></div>`
 }
 
 function renderGrid() {
+  moreMenuAbort?.abort()
+  moreMenuAbort = null
+  toolbarAbort?.abort()
+  toolbarAbort = null
+  clearToolbarHideTimer()
   document.body.classList.add('is-grid')
-  const gridModifier =
-    slotCount === 3 ? `grid--3 grid--3-${layout3}` : `grid--${slotCount}`
-
-  app.innerHTML = `
-    <div class="grid-shell">
-      <div class="toolbar-hotzone" aria-hidden="true"></div>
-      <div class="toolbar" role="toolbar" aria-label="Controles">
-        <button type="button" class="btn btn--load" id="btn-open-all">Abrir todos</button>
-        <button type="button" class="btn btn--ghost" id="btn-layout">Telas</button>
-        ${
-          slotCount === 3
-            ? `<button type="button" class="btn btn--ghost" id="btn-layout3">${
-                layout3 === 'equal' ? 'Topo maior' : 'Iguais'
-              }</button>`
-            : ''
-        }
-        <button type="button" class="btn btn--ghost" id="btn-fullscreen">Tela cheia</button>
-        <div class="toolbar__more">
-          <button
-            type="button"
-            class="btn btn--ghost btn--icon"
-            id="btn-more"
-            aria-label="Mais opções"
-            aria-haspopup="menu"
-            aria-expanded="false"
-            aria-controls="toolbar-more-menu"
-          >
-            <span aria-hidden="true">⋯</span>
-          </button>
-          <div class="toolbar__menu" id="toolbar-more-menu" role="menu" hidden>
-            <button type="button" class="btn btn--ghost" id="btn-clear-all" role="menuitem">
-              Limpar todos
-            </button>
-          </div>
+  const canUndo = history.length > 0
+  app.innerHTML = `<div class="grid-shell${editorOpen ? ' is-editor-open' : ''}">
+    <div class="toolbar-hotzone" aria-hidden="true"></div>
+    <div class="toolbar" role="toolbar" aria-label="Controles">
+      <button type="button" class="btn btn--load" id="btn-open-all">Abrir todos</button>
+      <button type="button" class="btn btn--ghost" id="btn-organize">${editorOpen ? 'Concluir' : 'Organizar'}</button>
+      <button type="button" class="btn btn--ghost" id="btn-layout">Voltar</button>
+      <span class="toolbar__status" aria-live="polite">${layoutModeLabel()}</span>
+      <label class="toolbar__count"><span>Telas</span><select id="panel-count" aria-label="Quantidade de telas">${Array.from({ length: MAX_PANELS }, (_, index) => `<option value="${index + 1}"${index + 1 === panels.length ? ' selected' : ''}>${index + 1}</option>`).join('')}</select></label>
+      <button type="button" class="btn btn--ghost" id="btn-fullscreen">${isFullscreenActive() ? 'Minimizar' : 'Tela Cheia'}</button>
+      <div class="toolbar__more"><button type="button" class="btn btn--ghost btn--icon" id="btn-more" aria-label="Mais opções" aria-haspopup="menu" aria-expanded="false" aria-controls="toolbar-more-menu">⋯</button>
+        <div class="toolbar__menu" id="toolbar-more-menu" role="menu" hidden>
+          <button type="button" class="btn btn--ghost" id="btn-auto" role="menuitem">Organizar automaticamente</button>
+          <button type="button" class="btn btn--ghost" id="btn-equal" role="menuitem">Todos iguais</button>
+          <button type="button" class="btn btn--ghost" id="btn-undo" role="menuitem"${canUndo ? '' : ' disabled'}>Desfazer</button>
+          <button type="button" class="btn btn--ghost" id="btn-clear-all" role="menuitem">Limpar todos</button>
         </div>
       </div>
-      <div class="grid ${gridModifier}" id="watch-grid">
-        ${urls
-          .map(
-            (url, i) => `
-          <div class="panel${url ? '' : ' panel--empty'}" data-slot="${i}">
-            ${panelInnerHtml(i, url)}
-          </div>
-        `,
-          )
-          .join('')}
-      </div>
     </div>
-  `
+    <div class="layout-stage grid grid--${panels.length}${editorOpen ? ' is-editing' : ''}" id="layout-stage" data-layout-mode="${layoutMode}">
+      ${panels.map((panel, index) => `<div class="panel${panel.url ? ' panel--loaded' : ' panel--empty'}${highlighted.has(panel.id) ? ' is-highlighted' : ''}" data-panel-id="${escapeHtml(panel.id)}" data-slot="${index}">${panelInnerHtml(panel)}</div>`).join('')}
+      ${splitHandlesHtml()}
+    </div>
+    ${movePickerHtml()}
+  </div>`
 
   app.querySelectorAll<HTMLElement>('.panel').forEach(bindPanelForm)
-
-  app.querySelector('#btn-layout')!.addEventListener('click', () => {
-    if (document.fullscreenElement) {
-      void document.exitFullscreen()
-    }
-    view = 'choose'
-    render()
+  app.querySelectorAll<HTMLElement>('.split-handle').forEach(bindSplitHandle)
+  app.querySelector<HTMLButtonElement>('#btn-open-all')?.addEventListener('click', openAllPanels)
+  app.querySelector<HTMLButtonElement>('#btn-organize')?.addEventListener('click', () => setEditor(!editorOpen))
+  app.querySelector<HTMLSelectElement>('#panel-count')?.addEventListener('change', (event) => setPanelCount(Number((event.target as HTMLSelectElement).value)))
+  app.querySelector<HTMLButtonElement>('#btn-fullscreen')?.addEventListener('click', toggleFullscreen)
+  app.querySelector<HTMLButtonElement>('#btn-layout')?.addEventListener('click', () => {
+    void confirmAction('Voltar à escolha de telas?', 'Voltar').then((ok) => {
+      if (!ok) return
+      if (document.fullscreenElement) void document.exitFullscreen()
+      if (window.quadra && nativeFullscreen) {
+        nativeFullscreen = false
+        window.quadra.setFullscreen(false)
+      }
+      view = 'choose'
+      editorOpen = false
+      render()
+    })
   })
-
-  app.querySelector('#btn-layout3')?.addEventListener('click', () => {
-    layout3 = layout3 === 'equal' ? 'focus' : 'equal'
-    const grid = app.querySelector('#watch-grid')
-    const button = app.querySelector<HTMLButtonElement>('#btn-layout3')
-    grid?.classList.toggle('grid--3-equal', layout3 === 'equal')
-    grid?.classList.toggle('grid--3-focus', layout3 === 'focus')
-    if (button) {
-      button.textContent = layout3 === 'equal' ? 'Topo maior' : 'Iguais'
-    }
-  })
-
-  app.querySelector('#btn-open-all')!.addEventListener('click', () => {
-    openAllPanels()
-  })
-
-  app.querySelector('#btn-fullscreen')!.addEventListener('click', () => {
-    toggleFullscreen()
-  })
-
+  app.querySelector('[data-move-cancel]')?.addEventListener('click', () => { moveSource = null; renderGrid() })
+  app.querySelectorAll<HTMLButtonElement>('[data-move-to]').forEach((button) => button.addEventListener('click', () => { if (moveSource) swapPanelPositions(moveSource, button.dataset.moveTo ?? '') }))
   bindMoreMenu()
   bindToolbarAutoHide()
+  renderPanelElements()
 }
 
 function render() {
@@ -532,11 +662,33 @@ function render() {
   toolbarAbort?.abort()
   toolbarAbort = null
   clearToolbarHideTimer()
-  if (view === 'choose') {
-    renderChoose()
-  } else {
-    renderGrid()
-  }
+  if (view === 'choose') renderChoose()
+  else renderGrid()
 }
 
+app.addEventListener('click', (event) => {
+  if (!moveSource) return
+  const target = event.target as HTMLElement
+  if (target.closest('[data-move], [data-move-to], [data-move-cancel]')) return
+  if (!target.closest('.move-picker')) {
+    moveSource = null
+    renderGrid()
+  }
+})
+
+window.quadra?.onRequestLayout(() => scheduleSyncLayout())
+window.quadra?.onFullscreenChange((on) => {
+  nativeFullscreen = on
+  updateFullscreenButton()
+  scheduleSyncLayout()
+})
+window.addEventListener('resize', () => {
+  if (view === 'grid' && layoutMode !== 'manual') buildCurrentLayout(layoutMode)
+  if (view === 'grid') renderPanelElements()
+  else scheduleSyncLayout()
+}, { passive: true })
+document.addEventListener('fullscreenchange', updateFullscreenButton)
+document.addEventListener('scroll', scheduleSyncLayout, { capture: true, passive: true })
+
 render()
+window.quadra?.ready()

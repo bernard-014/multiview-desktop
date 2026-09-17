@@ -1,6 +1,6 @@
-# Quadra — Multi-view 2×2
+# Quadra — Multi-view
 
-Página simples para assistir até **4 jogos ao mesmo tempo** na mesma aba do navegador, em grade 2×2, sem abrir quatro janelas com barra de título e URL.
+Quadra é um aplicativo desktop Electron para abrir de 1 a 16 páginas independentes em uma única janela. Cada painel usa uma `WebContentsView` completa do Chromium, portanto páginas que bloqueiam incorporação continuam podendo ser abertas diretamente no painel.
 
 ## Como rodar
 
@@ -9,23 +9,38 @@ npm install
 npm run dev
 ```
 
-Abra [http://127.0.0.1:43123](http://127.0.0.1:43123).
-
-Build de produção:
+Para gerar o build e o instalador Windows:
 
 ```bash
 npm run build
-npm run preview
+npm run dist
 ```
+
+O instalador é escrito em `release/`. Depois de instalado, o programa funciona sem Vite ou servidor local.
 
 ## Uso
 
-1. Cole até 4 URLs na tela inicial.
-2. Clique em **Assistir**.
-3. Passe o mouse no canto superior direito para **Editar links** ou **Tela cheia** (ou use **F11**).
+1. Escolha qualquer quantidade entre 1 e 16 telas.
+2. Cole uma URL em cada painel e clique em **Abrir** ou **Abrir todos**.
+3. Use **Organizar** para destacar jogos, trocar posições e ajustar divisórias com o mouse ou as setas do teclado.
+4. Escolha **Todos iguais**, **Organizar automaticamente**, **Desfazer** ou altere a quantidade no seletor **Telas**.
+5. Use **Voltar**, **Tela Cheia**, o menu de opções e o botão de edição de cada painel.
 
-Os links ficam salvos no `localStorage` do navegador.
+O modo inicial distribui todos os painéis com a mesma área. Ao destacar um ou mais jogos, o Quadra monta uma composição automática com esses jogos em uma região maior; em 13 telas, um destaque recebe um quadrante e os outros 12 ficam em três quadrantes 2×2. O modo **Todos iguais** sempre remove os destaques. A composição manual mantém as proporções escolhidas ao redimensionar a janela.
 
-## Limitações
+As URLs ficam em memória durante a execução. Não há integração com navegadores externos, perfil separado ou configuração específica por serviço.
 
-Muitos sites de stream bloqueiam embed via iframe (`X-Frame-Options` / CSP). Nesses casos o painel fica em branco — isso é restrição do site, não do Quadra.
+## Validações
+
+```bash
+npm test
+npm run typecheck
+npm run test:renderer
+npm run test:app
+npm run test:close
+npm run test:packaged
+```
+
+Os testes locais cobrem cada quantidade de 1 a 16, áreas equivalentes, destaques múltiplos, o caso de 13 telas, divisórias por teclado, troca de posições, edição, ações coletivas, abertura de múltiplas páginas, fechamento e uma página com `X-Frame-Options` carregada diretamente em um painel.
+
+Problemas de validação de URL, mensagens de erro de navegação, reabertura da mesma URL e perda de parâmetros em certos links do YouTube permanecem fora desta limpeza.

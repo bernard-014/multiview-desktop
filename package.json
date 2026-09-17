@@ -1,15 +1,43 @@
 {
   "name": "quadra-multiview",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "description": "Quadra multi-view desktop com painéis independentes no Electron",
   "type": "module",
+  "main": "out/main/main.js",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview"
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "test": "npm run test:routing && node --experimental-strip-types --test tests/layout.test.ts",
+    "test:app": "node tests/app-integration.cjs",
+    "test:close": "node tests/app-close-smoke.cjs",
+    "test:packaged": "node tests/packaged-smoke.cjs",
+    "test:routing": "node --experimental-strip-types --test tests/routing.test.ts",
+    "test:renderer": "node tests/renderer-smoke.cjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "dist": "npm run build && electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.quadra.multiview",
+    "productName": "Quadra",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis"
+    }
   },
   "devDependencies": {
+    "@types/node": "^24.13.5",
+    "electron": "^44.4.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
     "typescript": "~6.0.2",
-    "vite": "^8.2.2"
+    "vite": "^7.3.6"
   }
 }
