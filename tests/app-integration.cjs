@@ -96,12 +96,14 @@ async function run() {
     const target = await waitForRendererTarget(port)
     assert.equal(await evaluate(target.webSocketDebuggerUrl, `document.querySelector('.app-version')?.textContent`), 'v1.02')
     const opened = await evaluate(target.webSocketDebuggerUrl, `(() => {
-      document.querySelector('[data-count="2"]').click()
-      const forms = [...document.querySelectorAll('.panel .panel__bar')]
-      forms.forEach((form, index) => {
-        form.querySelector('input[name="url"]').value = ${JSON.stringify(baseUrl)} + '/page?slot=' + index
-        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-      })
+      document.querySelector('#btn-start-one').click()
+      let form = document.querySelector('.panel[data-slot="0"] .panel__bar')
+      form.querySelector('input[name="url"]').value = ${JSON.stringify(baseUrl + '/page?slot=0')}
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      document.querySelector('#btn-add-panel').click()
+      form = document.querySelector('.panel[data-slot="1"] .panel__bar')
+      form.querySelector('input[name="url"]').value = ${JSON.stringify(baseUrl + '/page?slot=1')}
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       return {
         grid: Boolean(document.querySelector('.grid--2')),
         panelCount: document.querySelectorAll('.panel').length,

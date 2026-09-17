@@ -71,6 +71,30 @@ async function run() {
         }
         const result = { version: document.querySelector('.app-version')?.textContent ?? '', layouts: [], interactions: {} }
 
+        document.querySelector('#btn-start-one').click()
+        await waitFrame()
+        result.interactions.startsWithOne = document.querySelectorAll('.panel').length === 1 &&
+          document.querySelector('.panel[data-slot="0"] input[name="url"]') === document.activeElement
+        const firstDraft = document.querySelector('.panel[data-slot="0"] input[name="url"]')
+        firstDraft.value = 'https://example.com/draft'
+        firstDraft.dispatchEvent(new Event('input', { bubbles: true }))
+        document.querySelector('#btn-add-panel').click()
+        await waitFrame()
+        const addedPanel = document.querySelector('.panel[data-slot="1"]')
+        result.interactions.addsPanel = document.querySelectorAll('.panel').length === 2
+        result.interactions.preservesDraft = document.querySelector('.panel[data-slot="0"] input[name="url"]').value === 'https://example.com/draft'
+        result.interactions.focusesNewPanel = addedPanel?.querySelector('input[name="url"]') === document.activeElement
+        while (document.querySelectorAll('.panel').length < 16) {
+          document.querySelector('#btn-add-panel').click()
+          await waitFrame()
+        }
+        result.interactions.addsUntilSixteen = document.querySelectorAll('.panel').length === 16
+        result.interactions.disablesAtLimit = document.querySelector('#btn-add-panel').disabled
+        document.querySelector('#btn-layout').click()
+        await waitFrame()
+        document.querySelector('.confirm [data-ok]').click()
+        await waitFrame()
+
         for (let count = 1; count <= 16; count += 1) {
           document.querySelector('[data-count="' + count + '"]').click()
           await waitFrame()
@@ -167,6 +191,12 @@ async function run() {
       assert.match(layout.className, new RegExp('grid--' + layout.count + '(?: |$)'))
     }
     assert.equal(result.interactions.twoHighlightsHaveMoreArea, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.startsWithOne, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.addsPanel, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.preservesDraft, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.focusesNewPanel, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.addsUntilSixteen, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.disablesAtLimit, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.keyboardResizesSplit, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.undoRestoresSplit, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.movePickerOpens, true)

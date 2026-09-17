@@ -13,7 +13,7 @@ import {
 } from './layout'
 
 type View = 'choose' | 'grid'
-type Panel = { id: PanelId; url: string }
+type Panel = { id: PanelId; url: string; draftUrl: string }
 type LayoutSnapshot = {
   panels: Panel[]
   highlighted: PanelId[]
@@ -41,9 +41,10 @@ let nativeFullscreen = false
 let layoutSyncFrame: number | null = null
 let lastChromeInteractive: boolean | null = null
 let currentSplitBounds = new Map<string, { direction: SplitDirection; bounds: Bounds; ratio: number }>()
+let pendingFocusPanelId: PanelId | null = null
 
 function createPanel(): Panel {
-  return { id: `panel-${panelSerial++}`, url: '' }
+  return { id: `panel-${panelSerial++}`, url: '', draftUrl: '' }
 }
 
 function initializePanels(count: number) {
@@ -69,6 +70,14 @@ function panelById(id: PanelId) {
   return panels.find((panel) => panel.id === id)
 }
 
+function captureDrafts() {
+  for (const panel of panels) {
+    const element = app.querySelector<HTMLElement>(`[data-panel-id="${CSS.escape(panel.id)}"]`)
+    const input = element?.querySelector<HTMLInputElement>('input[name="url"]')
+    if (input) panel.draftUrl = input.value
+  }
+}
+
 function viewportAspect() {
   const stage = app.querySelector<HTMLElement>('#layout-stage')
   const rect = stage?.getBoundingClientRect()
@@ -86,6 +95,7 @@ function cloneSnapshot(): LayoutSnapshot {
 }
 
 function pushHistory() {
+  captureDrafts()
   history = [...history.slice(-(HISTORY_LIMIT - 1)), cloneSnapshot()]
 }
 
@@ -95,6 +105,7 @@ function restoreSnapshot(snapshot: LayoutSnapshot) {
   layoutTree = snapshot.tree
   layoutMode = snapshot.mode
   moveSource = null
+  pendingFocusPanelId = null
   render()
 }
 
@@ -124,7 +135,10 @@ function setPanelCount(count: number, options: { recordHistory?: boolean } = {})
     highlighted = new Set([...highlighted].filter((id) => !removed.has(id)))
   }
 
-  buildCurrentLayout(layoutMode === 'manual' ? 'auto' : layoutMode)
+  const nextMode = layoutMode === 'manual'
+    ? (highlighted.size > 0 ? 'auto' : 'equal')
+    : layoutMode
+  buildCurrentLayout(nextMode)
   if (view === 'grid') renderGrid()
 }
 
@@ -132,7 +146,29 @@ function selectCount(count: number) {
   setPanelCount(count, { recordHistory: false })
   view = 'grid'
   editorOpen = false
+  pendingFocusPanelId = null
   render()
+}
+
+function startWithOnePanel() {
+  setPanelCount(1, { recordHistory: false })
+  view = 'grid'
+  editorOpen = false
+  pendingFocusPanelId = panels[0]?.id ?? null
+  render()
+}
+
+function addPanel() {
+  if (panels.length >= MAX_PANELS || view !== 'grid') return
+  pushHistory()
+  const panel = createPanel()
+  panels = [...panels, panel]
+  pendingFocusPanelId = panel.id
+  const nextMode = layoutMode === 'manual'
+    ? (highlighted.size > 0 ? 'auto' : 'equal')
+    : layoutMode
+  buildCurrentLayout(nextMode)
+  renderGrid()
 }
 
 function setEditor(open: boolean) {
@@ -180,20 +216,22 @@ function applyPanelUrl(id: PanelId, next: string) {
   const panel = panelById(id)
   if (!panel) return
   panel.url = next
+  panel.draftUrl = next
   renderGrid()
 }
 
 function openAllPanels() {
   panels = panels.map((panel) => {
     const input = app.querySelector<HTMLInputElement>(`[data-panel-id="${CSS.escape(panel.id)}"] input[name="url"]`)
-    return { ...panel, url: input ? normalizeUrl(input.value) : panel.url }
+    const url = input ? normalizeUrl(input.value) : panel.url
+    return { ...panel, url, draftUrl: url }
   })
   renderGrid()
 }
 
 function clearAllPanels() {
   pushHistory()
-  panels = panels.map((panel) => ({ ...panel, url: '' }))
+  panels = panels.map((panel) => ({ ...panel, url: '', draftUrl: '' }))
   renderGrid()
 }
 
@@ -207,7 +245,7 @@ function urlFormHtml(panel: Panel, options: { withClose?: boolean } = {}): strin
     <form class="panel__bar" data-panel-form data-panel-id="${escapeHtml(panel.id)}" novalidate>
       <label class="visually-hidden" for="url-${escapeHtml(panel.id)}">URL do jogo ${index + 1}</label>
       <input id="url-${escapeHtml(panel.id)}" type="url" name="url" inputmode="url" autocomplete="off" spellcheck="false"
-        placeholder="Cole link YouTube ou URL e pressione Enter" value="${escapeHtml(panel.url)}" />
+        placeholder="Cole link YouTube ou URL e pressione Enter" value="${escapeHtml(panel.draftUrl)}" />
       <button type="submit" class="btn btn--load" aria-label="Abrir link">Abrir</button>
       <button type="button" class="btn btn--clear" data-clear aria-label="Limpar link">Limpar</button>
       ${closeBtn}
@@ -296,6 +334,17 @@ function renderPanelElements() {
   scheduleSyncLayout()
 }
 
+function focusPendingPanel() {
+  const id = pendingFocusPanelId
+  if (!id) return
+  pendingFocusPanelId = null
+  requestAnimationFrame(() => {
+    const input = app.querySelector<HTMLInputElement>(`[data-panel-id="${CSS.escape(id)}"] input[name="url"]`)
+    input?.focus()
+    input?.select()
+  })
+}
+
 function setPanelEditing(panel: HTMLElement, editing: boolean) {
   panel.classList.toggle('is-editing', editing)
   if (editing) {
@@ -310,6 +359,10 @@ function bindPanelForm(panelElement: HTMLElement) {
   const id = panelElement.dataset.panelId
   if (!id) return
   const form = panelElement.querySelector<HTMLFormElement>('[data-panel-form]')
+  form?.querySelector<HTMLInputElement>('input[name="url"]')?.addEventListener('input', (event) => {
+    const panel = panelById(id)
+    if (panel) panel.draftUrl = (event.target as HTMLInputElement).value
+  })
   form?.addEventListener('pointerenter', () => setChromeInteractive(true))
   form?.addEventListener('pointerdown', () => setChromeInteractive(true))
 
@@ -578,15 +631,18 @@ function layoutModeLabel() {
 }
 
 function renderChoose() {
+  pendingFocusPanelId = null
   document.body.classList.remove('is-grid')
   setChromeInteractive(true)
   app.innerHTML = `<main class="chooser"><div class="chooser__atmosphere" aria-hidden="true"></div><div class="chooser__content">
     <div class="brand-lockup"><p class="brand">Quadra</p><span class="app-version" aria-label="Versão ${APP_VERSION}">${APP_VERSION}</span></div>
     <h1>Quantas telas?</h1><p class="lede">Escolha de 1 a 16 jogos para acompanhar ao mesmo tempo.</p>
+    <div class="chooser__start"><button type="button" class="btn btn--load" id="btn-start-one">Começar com uma tela</button><span>Adicione outras telas quando quiser.</span></div>
     <div class="chooser__options" role="group" aria-label="Número de telas">
       ${Array.from({ length: MAX_PANELS }, (_, index) => index + 1).map((count) => `<button type="button" class="chooser__card${count === panels.length ? ' is-current' : ''}" data-count="${count}">${previewHtml(count)}<span class="chooser__count">${count}</span><span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span></button>`).join('')}
     </div>
   </div></main>`
+  app.querySelector<HTMLButtonElement>('#btn-start-one')?.addEventListener('click', startWithOnePanel)
   app.querySelectorAll<HTMLButtonElement>('.chooser__card').forEach((button) => button.addEventListener('click', () => selectCount(Number(button.dataset.count))))
   scheduleSyncLayout()
 }
@@ -609,10 +665,11 @@ function renderGrid() {
     <div class="toolbar-hotzone" aria-hidden="true"></div>
     <div class="toolbar" role="toolbar" aria-label="Controles">
       <button type="button" class="btn btn--load" id="btn-open-all">Abrir todos</button>
+      <button type="button" class="btn btn--load" id="btn-add-panel"${panels.length >= MAX_PANELS ? ' disabled' : ''} aria-label="${panels.length >= MAX_PANELS ? 'Limite de 16 telas atingido' : 'Adicionar uma tela'}" title="${panels.length >= MAX_PANELS ? 'Limite de 16 telas atingido' : 'Adicionar uma tela'}">+ Adicionar tela</button>
       <button type="button" class="btn btn--ghost" id="btn-organize">${editorOpen ? 'Concluir' : 'Organizar'}</button>
       <button type="button" class="btn btn--ghost" id="btn-layout">Voltar</button>
       <span class="toolbar__status" aria-live="polite">${layoutModeLabel()}</span>
-      <label class="toolbar__count"><span>Telas</span><select id="panel-count" aria-label="Quantidade de telas">${Array.from({ length: MAX_PANELS }, (_, index) => `<option value="${index + 1}"${index + 1 === panels.length ? ' selected' : ''}>${index + 1}</option>`).join('')}</select></label>
+      <label class="toolbar__count"><span>Telas <output id="panel-count-status" aria-live="polite">${panels.length}/${MAX_PANELS}</output></span><select id="panel-count" aria-label="Quantidade de telas">${Array.from({ length: MAX_PANELS }, (_, index) => `<option value="${index + 1}"${index + 1 === panels.length ? ' selected' : ''}>${index + 1}</option>`).join('')}</select></label>
       <button type="button" class="btn btn--ghost" id="btn-fullscreen">${isFullscreenActive() ? 'Minimizar' : 'Tela Cheia'}</button>
       <div class="toolbar__more"><button type="button" class="btn btn--ghost btn--icon" id="btn-more" aria-label="Mais opções" aria-haspopup="menu" aria-expanded="false" aria-controls="toolbar-more-menu">⋯</button>
         <div class="toolbar__menu" id="toolbar-more-menu" role="menu" hidden>
@@ -633,6 +690,7 @@ function renderGrid() {
   app.querySelectorAll<HTMLElement>('.panel').forEach(bindPanelForm)
   app.querySelectorAll<HTMLElement>('.split-handle').forEach(bindSplitHandle)
   app.querySelector<HTMLButtonElement>('#btn-open-all')?.addEventListener('click', openAllPanels)
+  app.querySelector<HTMLButtonElement>('#btn-add-panel')?.addEventListener('click', addPanel)
   app.querySelector<HTMLButtonElement>('#btn-organize')?.addEventListener('click', () => setEditor(!editorOpen))
   app.querySelector<HTMLSelectElement>('#panel-count')?.addEventListener('change', (event) => setPanelCount(Number((event.target as HTMLSelectElement).value)))
   app.querySelector<HTMLButtonElement>('#btn-fullscreen')?.addEventListener('click', toggleFullscreen)
@@ -654,6 +712,7 @@ function renderGrid() {
   bindMoreMenu()
   bindToolbarAutoHide()
   renderPanelElements()
+  focusPendingPanel()
 }
 
 function render() {

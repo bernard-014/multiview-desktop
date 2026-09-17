@@ -7,7 +7,7 @@ O fluxo restante usa somente `WebContentsView` dentro da janela principal. O pro
 Verificações executadas nesta versão:
 
 - typecheck e testes de normalização de URL;
-- layouts de 1 a 16 painéis, destaques múltiplos, o caso de 13 painéis, edição, limpeza, menus, divisórias e tela cheia;
+- layouts de 1 a 16 painéis, adição progressiva, preservação de rascunhos, destaques múltiplos, o caso de 13 painéis, edição, limpeza, menus, divisórias e tela cheia;
 - dois conteúdos Electron simultâneos e uma página local que envia `X-Frame-Options: DENY`;
 - encerramento com conteúdos carregados;
 - inicialização do executável empacotado e criação de `WebContentsView`.

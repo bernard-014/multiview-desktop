@@ -61,6 +61,8 @@ body.is-grid #app, body.is-grid .grid-shell, body.is-grid .layout-stage { backgr
 .app-version { margin-top: 0.2rem; color: var(--ink-muted); font-size: 0.75rem; letter-spacing: 0.07em; }
 .chooser h1 { margin: 1rem 0 0.25rem; font-family: 'Syne', sans-serif; font-size: clamp(1.5rem, 3vw, 2.2rem); }
 .lede { margin: 0 auto 1.8rem; color: var(--ink-muted); }
+.chooser__start { display: inline-flex; align-items: center; gap: 0.75rem; margin: 0 auto 1.65rem; padding: 0.65rem 0.75rem 0.65rem 0.9rem; border: 1px solid rgba(200,245,96,0.3); border-radius: 12px; background: rgba(7,26,20,0.72); }
+.chooser__start span { color: var(--ink-muted); font-size: 0.82rem; }
 .chooser__options { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.85rem; text-align: left; }
 .chooser__card {
   appearance: none; display: grid; gap: 0.35rem; min-width: 0; padding: 0.75rem; text-align: left; cursor: pointer;
@@ -112,6 +114,7 @@ body.is-grid #app, body.is-grid .grid-shell, body.is-grid .layout-stage { backgr
 .toolbar .btn--load, .toolbar .btn--ghost { padding: 0.62rem 0.85rem; font-size: 0.88rem; border-radius: 9px; box-shadow: 0 8px 22px rgba(0,0,0,0.4); white-space: nowrap; }
 .toolbar__status { color: var(--ink-muted); font-size: 0.78rem; white-space: nowrap; text-shadow: 0 1px 2px #000; }
 .toolbar__count { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.23rem 0.38rem 0.23rem 0.65rem; border: 1px solid var(--line); border-radius: 9px; background: rgba(7,26,20,0.9); color: var(--ink-muted); font-size: 0.8rem; box-shadow: 0 8px 22px rgba(0,0,0,0.4); }
+.toolbar__count output { color: var(--ink); font-variant-numeric: tabular-nums; }
 .toolbar__count select { min-width: 2.7rem; border: 0; border-radius: 6px; padding: 0.3rem 0.25rem; color: var(--ink); background: rgba(18,80,60,0.8); font: inherit; font-weight: 700; }
 .toolbar__more { position: relative; }
 .toolbar .btn--icon { width: 2.55rem; min-width: 2.55rem; height: 2.55rem; font-size: 1.35rem; }
@@ -145,4 +148,7 @@ body.is-grid #app, body.is-grid .grid-shell, body.is-grid .layout-stage { backgr
   .toolbar__status { font-size: 0.7rem; }
   .toolbar__count { font-size: 0.72rem; }
 }
-@media (max-width: 430px) { .chooser__options { grid-template-columns: 1fr; } }
+@media (max-width: 430px) {
+  .chooser__options { grid-template-columns: 1fr; }
+  .chooser__start { flex-direction: column; align-items: stretch; width: min(100%, 20rem); text-align: center; }
+}
