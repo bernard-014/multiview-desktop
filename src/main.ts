@@ -3,53 +3,73 @@ import { normalizeUrl } from './routing'
 import {
   buildLayoutTree,
   calculateLayout,
-  swapPanels,
-  updateSplitRatio,
-  type Bounds,
+  defaultHighlightCount,
+  getCompositions,
+  resolveComposition,
+  type HighlightPosition,
   type LayoutMode,
   type LayoutNode,
   type PanelId,
-  type SplitDirection,
 } from './layout'
+import {
+  buildOrganizerChoices,
+  organizerDraftKey,
+  organizerDraftValid,
+  type OrganizerChoice,
+  type OrganizerDraft,
+} from './organizer'
 
 type View = 'choose' | 'grid'
-type Panel = { id: PanelId; url: string; draftUrl: string }
+type Panel = { id: PanelId; url: string; draftUrl: string; muted: boolean }
 type LayoutSnapshot = {
   panels: Panel[]
   highlighted: PanelId[]
   tree: LayoutNode
   mode: LayoutMode
+  position: HighlightPosition | undefined
+  variant: string | undefined
+  order: PanelId[]
 }
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const APP_VERSION = 'v1.02'
+const APP_VERSION = 'v1.10'
 const MIN_PANELS = 1
 const MAX_PANELS = 16
 const HISTORY_LIMIT = 24
-const SPLIT_KEYBOARD_STEP = 0.03
+const TOOLBAR_IDLE_MS = 10_000
+let highlightPosition: HighlightPosition | undefined
+let compositionVariant: string | undefined
+let panelOrder: PanelId[] = []
+let resolvedHighlightPosition: HighlightPosition | undefined
 
 let view: View = 'choose'
 let panelSerial = 1
 let panels: Panel[] = []
 let highlighted = new Set<PanelId>()
-let layoutMode: LayoutMode = 'equal'
+let layoutMode: LayoutMode = 'auto'
 let layoutTree: LayoutNode
 let editorOpen = false
-let moveSource: PanelId | null = null
+let organizerDraft: OrganizerDraft | null = null
+let organizerBaselineKey = ''
+let organizerChoices: OrganizerChoice[] = []
+let organizerAspect = 0
+let organizerNotice = ''
 let history: LayoutSnapshot[] = []
 let nativeFullscreen = false
 let layoutSyncFrame: number | null = null
+let layoutResizeFrame: number | null = null
 let lastChromeInteractive: boolean | null = null
-let currentSplitBounds = new Map<string, { direction: SplitDirection; bounds: Bounds; ratio: number }>()
 let pendingFocusPanelId: PanelId | null = null
+let weddbetsTargetId: PanelId | null = null
 
 function createPanel(): Panel {
-  return { id: `panel-${panelSerial++}`, url: '', draftUrl: '' }
+  return { id: `panel-${panelSerial++}`, url: '', draftUrl: '', muted: allPanelsMuted() }
 }
 
 function initializePanels(count: number) {
   panels = Array.from({ length: count }, createPanel)
-  layoutTree = buildLayoutTree(panels.map((panel) => panel.id))
+  panelOrder = panels.map((panel) => panel.id)
+  buildCurrentLayout()
 }
 
 initializePanels(4)
@@ -91,6 +111,9 @@ function cloneSnapshot(): LayoutSnapshot {
     highlighted: [...highlighted],
     tree: layoutTree,
     mode: layoutMode,
+    position: highlightPosition,
+    variant: compositionVariant,
+    order: [...panelOrder],
   }
 }
 
@@ -104,7 +127,10 @@ function restoreSnapshot(snapshot: LayoutSnapshot) {
   highlighted = new Set(snapshot.highlighted)
   layoutTree = snapshot.tree
   layoutMode = snapshot.mode
-  moveSource = null
+  highlightPosition = snapshot.position
+  compositionVariant = snapshot.variant
+  panelOrder = [...snapshot.order]
+  buildCurrentLayout()
   pendingFocusPanelId = null
   render()
 }
@@ -116,10 +142,37 @@ function undo() {
   restoreSnapshot(previous)
 }
 
-function buildCurrentLayout(mode: LayoutMode = layoutMode) {
+function resetOrganizerDraft(notice = ''): void {
+  if (!editorOpen) return
+
+  const draft: OrganizerDraft = {
+    count: highlighted.size,
+    ids: [...highlighted],
+    position: highlighted.size === 0 ? undefined : resolvedHighlightPosition,
+    previousVariant: compositionVariant,
+  }
+  organizerDraft = draft
+  organizerBaselineKey = organizerDraftKey(draft, panels.length)
+  organizerNotice = notice
+  organizerChoices = []
+  organizerAspect = 0
+}
+
+function buildCurrentLayout(
+  mode: LayoutMode = layoutMode,
+  preserveOrganizerDraft = false,
+) {
   layoutMode = mode
-  const activeHighlights = mode === 'equal' ? new Set<PanelId>() : highlighted
-  layoutTree = buildLayoutTree(panels.map((panel) => panel.id), activeHighlights, viewportAspect())
+  panelOrder = [...panelOrder.filter((id) => panelById(id)), ...panels.map((panel) => panel.id).filter((id) => !panelOrder.includes(id))]
+  const result = resolveComposition(panelOrder, { mode, highlighted, position: highlightPosition, aspect: viewportAspect(), previousVariant: compositionVariant })
+  layoutTree = result.tree
+  highlighted = new Set(result.highlighted)
+  compositionVariant = result.variant
+  resolvedHighlightPosition = result.highlighted.length > 0 ? result.position : undefined
+  if (highlightPosition && !result.composition.positions.includes(highlightPosition)) highlightPosition = result.position
+  if (editorOpen && !preserveOrganizerDraft) {
+    resetOrganizerDraft('A organização mudou. A prévia foi atualizada.')
+  }
 }
 
 function setPanelCount(count: number, options: { recordHistory?: boolean } = {}) {
@@ -135,15 +188,17 @@ function setPanelCount(count: number, options: { recordHistory?: boolean } = {})
     highlighted = new Set([...highlighted].filter((id) => !removed.has(id)))
   }
 
-  const nextMode = layoutMode === 'manual'
-    ? (highlighted.size > 0 ? 'auto' : 'equal')
-    : layoutMode
-  buildCurrentLayout(nextMode)
+  buildCurrentLayout()
   if (view === 'grid') renderGrid()
 }
 
 function selectCount(count: number) {
+  highlighted.clear()
+  layoutMode = 'auto'
+  highlightPosition = undefined
+  compositionVariant = undefined
   setPanelCount(count, { recordHistory: false })
+  buildCurrentLayout()
   view = 'grid'
   editorOpen = false
   pendingFocusPanelId = null
@@ -151,7 +206,12 @@ function selectCount(count: number) {
 }
 
 function startWithOnePanel() {
+  highlighted.clear()
+  layoutMode = 'auto'
+  highlightPosition = undefined
+  compositionVariant = undefined
   setPanelCount(1, { recordHistory: false })
+  buildCurrentLayout()
   view = 'grid'
   editorOpen = false
   pendingFocusPanelId = panels[0]?.id ?? null
@@ -164,21 +224,44 @@ function addPanel() {
   const panel = createPanel()
   panels = [...panels, panel]
   pendingFocusPanelId = panel.id
-  const nextMode = layoutMode === 'manual'
-    ? (highlighted.size > 0 ? 'auto' : 'equal')
-    : layoutMode
-  buildCurrentLayout(nextMode)
+  buildCurrentLayout()
+  renderGrid()
+}
+
+function removeLastPanel() {
+  removePanel(panels.at(-1)?.id ?? '')
+}
+
+function removePanel(id: PanelId) {
+  if (panels.length <= MIN_PANELS || !panelById(id) || view !== 'grid') return
+  pushHistory()
+  panels = panels.filter((panel) => panel.id !== id)
+  panelOrder = panelOrder.filter((panelId) => panelId !== id)
+  highlighted.clear()
+  layoutMode = 'auto'
+  highlightPosition = undefined
+  compositionVariant = undefined
+  pendingFocusPanelId = null
+  buildCurrentLayout('auto')
   renderGrid()
 }
 
 function setEditor(open: boolean) {
+  captureDrafts()
   editorOpen = open
-  moveSource = null
-  app.querySelector('.grid-shell')?.classList.toggle('is-editor-open', open)
-  app.querySelector('#layout-stage')?.classList.toggle('is-editing', open)
-  const button = app.querySelector<HTMLButtonElement>('#btn-organize')
-  if (button) button.textContent = open ? 'Concluir' : 'Organizar'
-  scheduleSyncLayout()
+
+  if (open) {
+    resetOrganizerDraft()
+  } else {
+    organizerDraft = null
+    organizerChoices = []
+    organizerBaselineKey = ''
+    organizerAspect = 0
+    organizerNotice = ''
+  }
+
+  renderGrid()
+  app.querySelector<HTMLButtonElement>(open ? '[data-composition]' : '#btn-organize')?.focus()
 }
 
 function toggleHighlight(id: PanelId) {
@@ -186,8 +269,143 @@ function toggleHighlight(id: PanelId) {
   pushHistory()
   if (highlighted.has(id)) highlighted.delete(id)
   else highlighted.add(id)
-  buildCurrentLayout(highlighted.size > 0 ? 'auto' : 'equal')
+  buildCurrentLayout(highlighted.size > 0 ? 'highlights' : 'equal')
   renderGrid()
+  app.querySelector<HTMLButtonElement>(`[data-panel-id="${CSS.escape(id)}"] [data-highlight]`)?.focus()
+}
+
+function chooseHighlight(id: PanelId) {
+  const capacity = getCompositions(panels.length).at(-1)!.highlightCount
+  if (!panelById(id) || capacity === 0) return
+  if (highlighted.has(id)) {
+    if (highlighted.size <= 1) {
+      makeEqual()
+      return
+    }
+    toggleHighlight(id)
+    return
+  }
+  if (highlighted.size >= capacity) replaceHighlight(id)
+  else toggleHighlight(id)
+}
+
+function replaceHighlight(id: PanelId) {
+  if (!panelById(id) || panels.length < 3) return
+  pushHistory()
+  const others = [...highlighted].filter((panelId) => panelId !== id).slice(1)
+  highlighted = new Set([id, ...others])
+  buildCurrentLayout('highlights')
+  renderGrid()
+  app.querySelector<HTMLButtonElement>(`[data-panel-id="${CSS.escape(id)}"] [data-highlight]`)?.focus()
+}
+
+function chooseOrganizerComposition(count: number): void {
+  if (!organizerDraft) return
+  const composition = getCompositions(panels.length)
+    .find((entry) => entry.highlightCount === count)
+  if (!composition || count === organizerDraft.count) return
+
+  const ids = [
+    ...organizerDraft.ids.filter((id) => panelOrder.includes(id)),
+    ...panelOrder.filter((id) => !organizerDraft!.ids.includes(id)),
+  ].slice(0, count)
+  const position = count === 0
+    ? undefined
+    : composition.positions.includes(organizerDraft.position!)
+      ? organizerDraft.position
+      : composition.positions[0]
+
+  organizerDraft = { count, ids, position, previousVariant: undefined }
+  organizerNotice = ''
+  updateOrganizerPanel(`[data-composition="${count}"]`)
+}
+
+function toggleOrganizerPanel(id: PanelId): void {
+  if (!organizerDraft || !panelOrder.includes(id) || organizerDraft.count === 0) return
+
+  if (organizerDraft.count === 1) {
+    if (organizerDraft.ids[0] === id) return
+    organizerDraft = { ...organizerDraft, ids: [id], previousVariant: undefined }
+  } else if (organizerDraft.ids.includes(id)) {
+    organizerDraft = {
+      ...organizerDraft,
+      ids: organizerDraft.ids.filter((panelId) => panelId !== id),
+      previousVariant: undefined,
+    }
+  } else if (organizerDraft.ids.length < organizerDraft.count) {
+    organizerDraft = {
+      ...organizerDraft,
+      ids: [...organizerDraft.ids, id],
+      previousVariant: undefined,
+    }
+  } else {
+    organizerNotice = 'Desmarque uma tela antes de escolher outra.'
+    updateOrganizerPanel(`[data-map-panel="${CSS.escape(id)}"]`)
+    return
+  }
+
+  organizerDraft = {
+    ...organizerDraft,
+    ids: panelOrder.filter((panelId) => organizerDraft!.ids.includes(panelId)),
+  }
+  organizerNotice = ''
+  updateOrganizerPanel(`[data-map-panel="${CSS.escape(id)}"]`)
+}
+
+function chooseOrganizerPosition(key: string): void {
+  if (!organizerDraft) return
+  const choice = organizerChoices.find((entry) => entry.key === key)
+  if (!choice) return
+  const current = organizerDraft.position ?? 'none'
+  if (choice.positions.includes(current)) return
+
+  organizerDraft = {
+    ...organizerDraft,
+    position: organizerDraft.count === 0 ? undefined : choice.result.position,
+    previousVariant: choice.result.variant,
+  }
+  organizerNotice = ''
+  updateOrganizerPanel(`[data-organizer-position="${CSS.escape(key)}"]`)
+}
+
+function applyOrganizerDraft(): void {
+  if (!organizerDraft) return
+
+  if (!organizerDraftValid(panelOrder, organizerDraft)) {
+    organizerNotice = 'Selecione a quantidade indicada de telas principais.'
+    updateOrganizerPanel('[data-organize-apply]')
+    return
+  }
+
+  if (Math.abs(viewportAspect() - organizerAspect) > 1e-8) {
+    organizerNotice = 'O tamanho da janela mudou. Confira a prévia e clique em Aplicar.'
+    updateOrganizerPanel('[data-organize-apply]')
+    return
+  }
+
+  const selectedPosition = organizerDraft.position ?? 'none'
+  const choice = organizerChoices.find((entry) =>
+    entry.positions.includes(selectedPosition),
+  )
+  if (!choice) {
+    organizerNotice = 'A prévia está indisponível. Feche e abra Organizar.'
+    updateOrganizerPanel('[data-organize-apply]')
+    return
+  }
+
+  if (organizerDraftKey(organizerDraft, panels.length) === organizerBaselineKey) {
+    setEditor(false)
+    return
+  }
+
+  pushHistory()
+  layoutMode = organizerDraft.count === 0 ? 'equal' : 'highlights'
+  highlighted = new Set(choice.result.highlighted)
+  layoutTree = choice.result.tree
+  highlightPosition = organizerDraft.count === 0 ? undefined : choice.result.position
+  resolvedHighlightPosition = highlightPosition
+  compositionVariant = choice.result.variant
+  setEditor(false)
 }
 
 function makeEqual() {
@@ -199,16 +417,9 @@ function makeEqual() {
 
 function organizeAutomatically() {
   pushHistory()
-  buildCurrentLayout(highlighted.size > 0 ? 'auto' : 'equal')
-  renderGrid()
-}
-
-function swapPanelPositions(firstId: PanelId, secondId: PanelId) {
-  if (firstId === secondId || !panelById(firstId) || !panelById(secondId)) return
-  pushHistory()
-  layoutTree = swapPanels(layoutTree, firstId, secondId)
-  layoutMode = 'manual'
-  moveSource = null
+  highlighted.clear()
+  compositionVariant = undefined
+  buildCurrentLayout('auto')
   renderGrid()
 }
 
@@ -220,6 +431,28 @@ function applyPanelUrl(id: PanelId, next: string) {
   renderGrid()
 }
 
+function panelLabel(id: PanelId) {
+  return `Jogo ${panelIndex(id) + 1}`
+}
+
+function openWeddbets(id: PanelId) {
+  if (!panelById(id)) return
+  weddbetsTargetId = id
+  window.quadra?.openWeddbets(id, panelLabel(id))
+}
+
+function useWeddbetsPlayer(panelId: PanelId, url: string) {
+  const panel = panelById(panelId)
+  if (!panel || view !== 'grid') return
+  panel.url = url
+  panel.draftUrl = url
+  const next = panels.find((candidate) => candidate.id !== panelId && !candidate.url)
+  weddbetsTargetId = next?.id ?? null
+  renderGrid()
+  if (next) window.quadra?.setWeddbetsTarget(next.id, panelLabel(next.id))
+  else window.quadra?.setWeddbetsTarget(null)
+}
+
 function openAllPanels() {
   panels = panels.map((panel) => {
     const input = app.querySelector<HTMLInputElement>(`[data-panel-id="${CSS.escape(panel.id)}"] input[name="url"]`)
@@ -227,6 +460,42 @@ function openAllPanels() {
     return { ...panel, url, draftUrl: url }
   })
   renderGrid()
+}
+
+function allPanelsMuted() {
+  return panels.length > 0 && panels.every((panel) => panel.muted)
+}
+
+function updateAudioControls() {
+  const allMuted = allPanelsMuted()
+  const globalButton = app.querySelector<HTMLButtonElement>('#btn-mute-all')
+  if (globalButton) {
+    globalButton.textContent = allMuted ? 'Ativar som de todos' : 'Mutar todos'
+    globalButton.setAttribute('aria-pressed', String(allMuted))
+  }
+  for (const panel of panels) {
+    const button = app.querySelector<HTMLButtonElement>(`[data-panel-id="${CSS.escape(panel.id)}"] [data-mute]`)
+    if (!button) continue
+    const label = `${panel.muted ? 'Ativar som do' : 'Mutar'} jogo ${panelIndex(panel.id) + 1}`
+    button.textContent = panel.muted ? 'Ativar som' : 'Mutar'
+    button.setAttribute('aria-pressed', String(panel.muted))
+    button.setAttribute('aria-label', label)
+    button.title = label
+  }
+  scheduleSyncLayout()
+}
+
+function togglePanelMute(id: PanelId) {
+  const panel = panelById(id)
+  if (!panel) return
+  panel.muted = !panel.muted
+  updateAudioControls()
+}
+
+function toggleAllMuted() {
+  const muted = !allPanelsMuted()
+  for (const panel of panels) panel.muted = muted
+  updateAudioControls()
 }
 
 function clearAllPanels() {
@@ -246,6 +515,7 @@ function urlFormHtml(panel: Panel, options: { withClose?: boolean } = {}): strin
       <label class="visually-hidden" for="url-${escapeHtml(panel.id)}">URL do jogo ${index + 1}</label>
       <input id="url-${escapeHtml(panel.id)}" type="url" name="url" inputmode="url" autocomplete="off" spellcheck="false"
         placeholder="Cole link YouTube ou URL e pressione Enter" value="${escapeHtml(panel.draftUrl)}" />
+      <button type="button" class="btn btn--weddbets${weddbetsTargetId === panel.id ? ' is-target' : ''}" data-weddbets aria-pressed="${weddbetsTargetId === panel.id}" aria-label="Escolher jogo no WeddBets para o jogo ${index + 1}" title="Abrir WeddBets para este painel">WeddBets</button>
       <button type="submit" class="btn btn--load" aria-label="Abrir link">Abrir</button>
       <button type="button" class="btn btn--clear" data-clear aria-label="Limpar link">Limpar</button>
       ${closeBtn}
@@ -255,11 +525,16 @@ function urlFormHtml(panel: Panel, options: { withClose?: boolean } = {}): strin
 
 function panelActionsHtml(panel: Panel): string {
   const isHighlighted = highlighted.has(panel.id)
+  const canRemove = panels.length > MIN_PANELS
+  const removeLabel = canRemove
+    ? `Remover tela ${panelIndex(panel.id) + 1}`
+    : 'É necessário manter pelo menos uma tela'
   return `
     <div class="panel__controls" aria-label="Ações do jogo ${panelIndex(panel.id) + 1}">
+      <button type="button" class="btn btn--ghost panel__mute" data-mute aria-pressed="${panel.muted}" aria-label="${panel.muted ? 'Ativar som do' : 'Mutar'} jogo ${panelIndex(panel.id) + 1}" title="${panel.muted ? 'Ativar som do' : 'Mutar'} jogo ${panelIndex(panel.id) + 1}">${panel.muted ? 'Ativar som' : 'Mutar'}</button>
       <button type="button" class="btn btn--ghost btn--icon" data-highlight aria-pressed="${isHighlighted}" aria-label="${isHighlighted ? 'Remover destaque' : 'Destacar jogo'}" title="${isHighlighted ? 'Remover destaque' : 'Destacar jogo'}">${isHighlighted ? '★' : '☆'}</button>
-      <button type="button" class="btn btn--ghost btn--icon" data-move aria-label="Mover jogo" title="Mover jogo">↔</button>
       ${panel.url ? '<button type="button" class="btn btn--ghost btn--icon" data-edit aria-label="Editar URL" title="Editar URL">✎</button>' : ''}
+      <button type="button" class="btn btn--ghost btn--icon panel__remove" data-remove aria-label="${removeLabel}" title="${removeLabel}"${canRemove ? '' : ' disabled'}><img src="./trash-icon.png" alt="" aria-hidden="true" /></button>
     </div>
   `
 }
@@ -284,26 +559,12 @@ function panelInnerHtml(panel: Panel): string {
   `
 }
 
-function splitHandlesHtml(): string {
-  return [...calculateLayout(layoutTree).splits]
-    .map(
-      (split) => `
-        <button type="button" class="split-handle split-handle--${split.direction}" data-split-id="${escapeHtml(split.id)}" role="separator"
-          aria-orientation="${split.direction === 'row' ? 'vertical' : 'horizontal'}" aria-label="Redimensionar divisão" tabindex="0"></button>
-      `,
-    )
-    .join('')
-}
-
 function renderPanelElements() {
   const stage = app.querySelector<HTMLElement>('#layout-stage')
   if (!stage) return
   stage.dataset.layoutMode = layoutMode
   const result = calculateLayout(layoutTree)
   const rects = new Map(result.rects.map((rect) => [rect.panelId, rect]))
-  currentSplitBounds = new Map(
-    result.splits.map((split) => [split.id, { direction: split.direction, bounds: split.bounds, ratio: split.ratio }]),
-  )
 
   for (const panelElement of stage.querySelectorAll<HTMLElement>('.panel')) {
     const rect = rects.get(panelElement.dataset.panelId ?? '')
@@ -314,23 +575,6 @@ function renderPanelElements() {
     panelElement.style.height = `${rect.height * 100}%`
   }
 
-  for (const handle of stage.querySelectorAll<HTMLElement>('.split-handle')) {
-    const split = currentSplitBounds.get(handle.dataset.splitId ?? '')
-    if (!split) continue
-    const { bounds, direction, ratio } = split
-    if (direction === 'row') {
-      handle.style.left = `${(bounds.x + bounds.width * ratio) * 100}%`
-      handle.style.top = `${bounds.y * 100}%`
-      handle.style.height = `${bounds.height * 100}%`
-      handle.style.width = '12px'
-    } else {
-      handle.style.left = `${bounds.x * 100}%`
-      handle.style.top = `${(bounds.y + bounds.height * ratio) * 100}%`
-      handle.style.width = `${bounds.width * 100}%`
-      handle.style.height = '12px'
-    }
-    handle.setAttribute('aria-valuenow', String(Math.round(ratio * 100)))
-  }
   scheduleSyncLayout()
 }
 
@@ -338,11 +582,13 @@ function focusPendingPanel() {
   const id = pendingFocusPanelId
   if (!id) return
   pendingFocusPanelId = null
-  requestAnimationFrame(() => {
+  const focus = () => {
     const input = app.querySelector<HTMLInputElement>(`[data-panel-id="${CSS.escape(id)}"] input[name="url"]`)
     input?.focus()
     input?.select()
-  })
+  }
+  focus()
+  requestAnimationFrame(focus)
 }
 
 function setPanelEditing(panel: HTMLElement, editing: boolean) {
@@ -366,15 +612,18 @@ function bindPanelForm(panelElement: HTMLElement) {
   form?.addEventListener('pointerenter', () => setChromeInteractive(true))
   form?.addEventListener('pointerdown', () => setChromeInteractive(true))
 
+  panelElement.querySelector('[data-mute]')?.addEventListener('click', (event) => {
+    event.stopPropagation()
+    togglePanelMute(id)
+  })
   panelElement.querySelector('[data-edit]')?.addEventListener('click', () => setPanelEditing(panelElement, true))
+  panelElement.querySelector('[data-remove]')?.addEventListener('click', (event) => {
+    event.stopPropagation()
+    removePanel(id)
+  })
   panelElement.querySelector('[data-highlight]')?.addEventListener('click', (event) => {
     event.stopPropagation()
-    toggleHighlight(id)
-  })
-  panelElement.querySelector('[data-move]')?.addEventListener('click', (event) => {
-    event.stopPropagation()
-    moveSource = moveSource === id ? null : id
-    renderGrid()
+    chooseHighlight(id)
   })
 
   form?.addEventListener('submit', (event) => {
@@ -383,67 +632,12 @@ function bindPanelForm(panelElement: HTMLElement) {
     applyPanelUrl(id, normalizeUrl(input.value))
   })
   form?.querySelector('[data-clear]')?.addEventListener('click', () => applyPanelUrl(id, ''))
+  form?.querySelector('[data-weddbets]')?.addEventListener('click', () => openWeddbets(id))
   form?.querySelector('[data-close]')?.addEventListener('click', () => setPanelEditing(panelElement, false))
   form?.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return
     event.preventDefault()
     setPanelEditing(panelElement, false)
-  })
-}
-
-function bindSplitHandle(handle: HTMLElement) {
-  const splitId = handle.dataset.splitId
-  if (!splitId) return
-  let dragging = false
-
-  const adjustFromPointer = (clientX: number, clientY: number) => {
-    const stage = app.querySelector<HTMLElement>('#layout-stage')
-    const split = currentSplitBounds.get(splitId)
-    if (!stage || !split) return
-    const stageRect = stage.getBoundingClientRect()
-    const value = split.direction === 'row'
-      ? (clientX - stageRect.left - split.bounds.x * stageRect.width) / (split.bounds.width * stageRect.width)
-      : (clientY - stageRect.top - split.bounds.y * stageRect.height) / (split.bounds.height * stageRect.height)
-    layoutTree = updateSplitRatio(layoutTree, splitId, value)
-    layoutMode = 'manual'
-    renderPanelElements()
-  }
-
-  handle.addEventListener('pointerdown', (event) => {
-    if (!editorOpen) return
-    event.preventDefault()
-    pushHistory()
-    dragging = true
-    handle.setPointerCapture(event.pointerId)
-    setChromeInteractive(true)
-    adjustFromPointer(event.clientX, event.clientY)
-  })
-  handle.addEventListener('pointermove', (event) => {
-    if (dragging) adjustFromPointer(event.clientX, event.clientY)
-  })
-  const finishDrag = (event: PointerEvent) => {
-    if (!dragging) return
-    dragging = false
-    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId)
-    scheduleSyncLayout()
-  }
-  handle.addEventListener('pointerup', finishDrag)
-  handle.addEventListener('pointercancel', finishDrag)
-  handle.addEventListener('keydown', (event) => {
-    if (!editorOpen) return
-    const split = currentSplitBounds.get(splitId)
-    if (!split) return
-    let delta = 0
-    if (split.direction === 'row' && event.key === 'ArrowLeft') delta = -SPLIT_KEYBOARD_STEP
-    if (split.direction === 'row' && event.key === 'ArrowRight') delta = SPLIT_KEYBOARD_STEP
-    if (split.direction === 'column' && event.key === 'ArrowUp') delta = -SPLIT_KEYBOARD_STEP
-    if (split.direction === 'column' && event.key === 'ArrowDown') delta = SPLIT_KEYBOARD_STEP
-    if (!delta) return
-    event.preventDefault()
-    pushHistory()
-    layoutTree = updateSplitRatio(layoutTree, splitId, split.ratio + delta)
-    layoutMode = 'manual'
-    renderPanelElements()
   })
 }
 
@@ -517,6 +711,7 @@ function syncLayout() {
     return [{
       id: panel.id,
       url: panel.url,
+      muted: panel.muted,
       editing: panelElement.classList.contains('is-editing'),
       bounds: { x: rect.left, y: rect.top, width: rect.width, height: rect.height },
     }]
@@ -538,62 +733,74 @@ function updateChromeHitTarget(x: number, y: number) {
     return
   }
   const target = document.elementFromPoint(x, y)
-  setChromeInteractive(Boolean(target?.closest('.toolbar, .panel__controls, .panel__overlay, .panel--empty, .split-handle, .move-picker, .confirm')))
+  setChromeInteractive(Boolean(target?.closest('.toolbar, .panel__controls, .panel__overlay, .panel--empty, .organize-panel, .confirm')))
 }
 
 let toolbarAbort: AbortController | null = null
 let moreMenuAbort: AbortController | null = null
-let toolbarHideTimer: ReturnType<typeof setTimeout> | null = null
-const TOOLBAR_IDLE_MS = 10_000
+let toolbarResizeObserver: ResizeObserver | null = null
+let toolbarHideTimer: number | null = null
 
 function clearToolbarHideTimer() {
-  if (!toolbarHideTimer) return
-  clearTimeout(toolbarHideTimer)
+  if (toolbarHideTimer !== null) window.clearTimeout(toolbarHideTimer)
   toolbarHideTimer = null
 }
 
-function bindToolbarAutoHide() {
-  toolbarAbort?.abort()
+function setToolbarVisible(visible: boolean) {
+  const shell = app.querySelector<HTMLElement>('.grid-shell')
+  shell?.classList.toggle('is-toolbar-visible', visible)
+  document.body.classList.toggle('is-cursor-hidden', !visible)
+  window.quadra?.setCursorHidden(!visible)
+  if (!visible) setChromeInteractive(false)
+}
+
+function scheduleToolbarHide() {
   clearToolbarHideTimer()
+  if (view !== 'grid') return
+  toolbarHideTimer = window.setTimeout(() => {
+    toolbarHideTimer = null
+    const protectedUiOpen = Boolean(document.querySelector(
+      '.toolbar:hover, .toolbar__menu:not([hidden]), .organize-panel, .confirm',
+    ))
+    if (protectedUiOpen) {
+      scheduleToolbarHide()
+      return
+    }
+    setToolbarVisible(false)
+  }, TOOLBAR_IDLE_MS)
+}
+
+function revealToolbar() {
+  if (view !== 'grid') return
+  setToolbarVisible(true)
+  scheduleToolbarHide()
+}
+
+function bindToolbar() {
+  toolbarAbort?.abort()
+  toolbarResizeObserver?.disconnect()
   toolbarAbort = new AbortController()
   const { signal } = toolbarAbort
   const shell = app.querySelector<HTMLElement>('.grid-shell')
   const toolbar = app.querySelector<HTMLElement>('.toolbar')
-  const hotzone = app.querySelector<HTMLElement>('.toolbar-hotzone')
   if (!shell || !toolbar) return
-  const isPinned = () => document.activeElement instanceof Node && toolbar.contains(document.activeElement)
-  const setVisible = (visible: boolean) => shell.classList.toggle('is-toolbar-visible', visible)
-  const scheduleHide = () => {
-    clearToolbarHideTimer()
-    toolbarHideTimer = setTimeout(() => {
-      toolbarHideTimer = null
-      if (!isPinned()) setVisible(false)
-    }, TOOLBAR_IDLE_MS)
+  const updateToolbarHeight = () => {
+    shell.style.setProperty('--toolbar-height', `${toolbar.getBoundingClientRect().height}px`)
   }
-  const reveal = () => {
-    setVisible(true)
-    if (isPinned()) clearToolbarHideTimer()
-    else scheduleHide()
-  }
-  const inShell = (x: number, y: number) => {
-    const rect = shell.getBoundingClientRect()
-    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom
-  }
+  toolbarResizeObserver = new ResizeObserver(updateToolbarHeight)
+  toolbarResizeObserver.observe(toolbar)
+  updateToolbarHeight()
+  revealToolbar()
+  // Windows forwards mouse movement while the transparent overlay passes
+  // clicks through to a video. Re-enable input as soon as it reaches a control.
   document.addEventListener('mousemove', (event) => {
-    if (inShell(event.clientX, event.clientY)) {
-      updateChromeHitTarget(event.clientX, event.clientY)
-      reveal()
-    } else {
-      setChromeInteractive(true)
-      setVisible(false)
-      clearToolbarHideTimer()
-    }
+    revealToolbar()
+    updateChromeHitTarget(event.clientX, event.clientY)
   }, { signal, passive: true })
-  hotzone?.addEventListener('mouseenter', reveal, { signal })
-  hotzone?.addEventListener('mousemove', reveal, { signal, passive: true })
-  toolbar.addEventListener('focusin', () => { setVisible(true); clearToolbarHideTimer() }, { signal })
-  toolbar.addEventListener('focusout', () => requestAnimationFrame(() => isPinned() ? setVisible(true) : scheduleHide()), { signal })
-  setVisible(false)
+  document.addEventListener('pointerdown', revealToolbar, { signal, passive: true })
+  document.addEventListener('keydown', revealToolbar, { signal, passive: true })
+  toolbar.addEventListener('pointerenter', () => setChromeInteractive(true), { signal })
+  toolbar.addEventListener('focusin', () => setChromeInteractive(true), { signal })
 }
 
 function bindMoreMenu() {
@@ -621,17 +828,22 @@ function bindMoreMenu() {
 function previewHtml(count: number): string {
   const ids = Array.from({ length: count }, (_, index) => `preview-${index}`)
   const tree = buildLayoutTree(ids)
-  return `<div class="chooser__preview">${calculateLayout(tree).rects.map((rect) => `<span style="left:${rect.x * 100}%;top:${rect.y * 100}%;width:${rect.width * 100}%;height:${rect.height * 100}%"></span>`).join('')}</div>`
-}
-
-function layoutModeLabel() {
-  if (layoutMode === 'equal') return 'Todos iguais'
-  if (layoutMode === 'manual') return 'Ajuste manual'
-  return highlighted.size > 0 ? `${highlighted.size} destaque${highlighted.size === 1 ? '' : 's'}` : 'Automático'
+  const description = getCompositions(count).find((entry) => entry.highlightCount === defaultHighlightCount(count))
+  return `<div class="chooser__preview">${calculateLayout(tree).rects.map((rect) => `<span style="left:${rect.x * 100}%;top:${rect.y * 100}%;width:${rect.width * 100}%;height:${rect.height * 100}%"></span>`).join('')}</div><span class="chooser__composition">${escapeHtml(description?.label ?? `${count} sem destaques`)}</span>`
 }
 
 function renderChoose() {
+  clearToolbarHideTimer()
+  organizerDraft = null
+  organizerChoices = []
+  organizerBaselineKey = ''
+  organizerAspect = 0
+  organizerNotice = ''
+  document.body.classList.remove('is-cursor-hidden')
+  window.quadra?.setCursorHidden(false)
   pendingFocusPanelId = null
+  weddbetsTargetId = null
+  window.quadra?.setWeddbetsTarget(null)
   document.body.classList.remove('is-grid')
   setChromeInteractive(true)
   app.innerHTML = `<main class="chooser"><div class="chooser__atmosphere" aria-hidden="true"></div><div class="chooser__content">
@@ -639,7 +851,7 @@ function renderChoose() {
     <h1>Quantas telas?</h1><p class="lede">Escolha de 1 a 16 jogos para acompanhar ao mesmo tempo.</p>
     <div class="chooser__start"><button type="button" class="btn btn--load" id="btn-start-one">Começar com uma tela</button><span>Adicione outras telas quando quiser.</span></div>
     <div class="chooser__options" role="group" aria-label="Número de telas">
-      ${Array.from({ length: MAX_PANELS }, (_, index) => index + 1).map((count) => `<button type="button" class="chooser__card${count === panels.length ? ' is-current' : ''}" data-count="${count}">${previewHtml(count)}<span class="chooser__count">${count}</span><span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span></button>`).join('')}
+      ${Array.from({ length: MAX_PANELS }, (_, index) => index + 1).map((count) => `<button type="button" class="chooser__card" data-count="${count}">${previewHtml(count)}<span class="chooser__count">${count}</span><span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span></button>`).join('')}
     </div>
   </div></main>`
   app.querySelector<HTMLButtonElement>('#btn-start-one')?.addEventListener('click', startWithOnePanel)
@@ -647,34 +859,153 @@ function renderChoose() {
   scheduleSyncLayout()
 }
 
-function movePickerHtml(): string {
-  if (!moveSource) return ''
-  const sourceIndex = panelIndex(moveSource)
-  return `<div class="move-picker" role="dialog" aria-label="Escolher posição"><div class="move-picker__header"><strong>Mover jogo ${sourceIndex + 1}</strong><button type="button" class="btn btn--ghost btn--icon" data-move-cancel aria-label="Cancelar">×</button></div><p>Escolha o jogo com que deseja trocar de posição.</p><div class="move-picker__options">${panels.filter((panel) => panel.id !== moveSource).map((panel) => `<button type="button" class="btn btn--ghost" data-move-to="${escapeHtml(panel.id)}">Jogo ${panelIndex(panel.id) + 1}</button>`).join('')}</div></div>`
+function organizerPreviewHtml(choice: OrganizerChoice): string {
+  const selected = new Set(choice.result.highlighted)
+
+  return `<span class="organize-preview" style="aspect-ratio:${organizerAspect}" aria-hidden="true">
+    ${choice.rects.map((rect) => {
+      const number = panelIndex(rect.panelId) + 1
+      const principal = selected.has(rect.panelId)
+
+      return `<span class="organize-preview__cell${principal ? ' is-principal' : ''}" data-preview-panel="${escapeHtml(rect.panelId)}" style="left:${rect.x * 100}%;top:${rect.y * 100}%;width:${rect.width * 100}%;height:${rect.height * 100}%"><span>${principal ? '★ ' : ''}${number}</span></span>`
+    }).join('')}
+  </span>`
+}
+
+function organizePanelHtml(): string {
+  const draft = organizerDraft
+  if (!draft) return ''
+
+  organizerAspect = viewportAspect()
+  organizerChoices = buildOrganizerChoices(panelOrder, draft, organizerAspect)
+
+  const valid = organizerDraftValid(panelOrder, draft)
+  const selectedPosition = draft.position ?? 'none'
+  const selectedChoice = organizerChoices.find((choice) => choice.positions.includes(selectedPosition))
+  const numbers = draft.ids.map((id) => panelIndex(id) + 1).join(', ')
+  const summary = !valid
+    ? `Selecione ${draft.count} telas principais.`
+    : draft.count === 0
+      ? 'Prévia sem destaques.'
+      : `Telas principais: ${numbers}. ${selectedChoice?.label ?? ''}.`
+
+  return `<div class="organize-panel" role="dialog" aria-labelledby="organizer-title" aria-describedby="organizer-summary">
+    <div class="organize-panel__header">
+      <strong id="organizer-title">Organizar telas</strong>
+      <button type="button" class="btn btn--ghost btn--icon" data-organize-close aria-label="Cancelar organização">×</button>
+    </div>
+
+    <div class="organize-panel__body">
+      <fieldset class="organize-panel__section">
+        <legend>1. Composição</legend>
+        <div class="organize-panel__compositions">
+          ${getCompositions(panels.length).map((entry) => {
+            const count = entry.highlightCount
+            const label = count === 0 ? 'Sem destaques' : count === 1 ? '1 principal' : `${count} principais`
+            return `<button type="button" class="btn btn--ghost" data-composition="${count}" aria-pressed="${count === draft.count}">${label}</button>`
+          }).join('')}
+        </div>
+      </fieldset>
+
+      ${draft.count > 0 ? `<fieldset class="organize-panel__section">
+        <legend>2. Quais telas?</legend>
+        <p class="organize-panel__hint">${draft.ids.length} de ${draft.count} selecionadas</p>
+        <div class="organize-panel__map">
+          ${panels.map((panel, index) => {
+            const selected = draft.ids.includes(panel.id)
+            return `<button type="button" class="organize-panel__slot" data-map-panel="${escapeHtml(panel.id)}" aria-pressed="${selected}" aria-label="Tela ${index + 1}${selected ? ', principal selecionada' : ''}">${selected ? '★ ' : ''}${index + 1}</button>`
+          }).join('')}
+        </div>
+      </fieldset>` : ''}
+
+      <fieldset class="organize-panel__section">
+        <legend>${draft.count === 0 ? '2. Prévia' : '3. Onde ficam?'}</legend>
+        ${valid ? `<div class="organize-panel__positions">
+          ${organizerChoices.map((choice) => {
+            const selected = choice.positions.includes(selectedPosition)
+            const description = draft.count === 0 ? choice.label : `${choice.label}. Telas principais: ${numbers}.`
+            return `<button type="button" class="organize-position" data-organizer-position="${escapeHtml(choice.key)}" data-organizer-aliases="${escapeHtml(choice.positions.join(' '))}" aria-pressed="${selected}" aria-label="${escapeHtml(description)}">${organizerPreviewHtml(choice)}<span class="organize-position__label">${escapeHtml(choice.label)}</span></button>`
+          }).join('')}
+        </div>` : `<p class="organize-panel__hint">Selecione ${draft.count} telas para visualizar as posições.</p>`}
+      </fieldset>
+
+      <p id="organizer-summary" class="organize-panel__hint">${escapeHtml(summary)}</p>
+      <p class="organize-panel__notice" role="status" aria-live="polite">${escapeHtml(organizerNotice)}</p>
+    </div>
+
+    <div class="organize-panel__actions">
+      <button type="button" class="btn btn--ghost" data-undo-organize${history.length === 0 ? ' disabled' : ''}>Desfazer</button>
+      <button type="button" class="btn btn--ghost" data-organize-cancel>Cancelar</button>
+      <button type="button" class="btn btn--load" data-organize-apply${valid && selectedChoice ? '' : ' disabled'}>Aplicar</button>
+    </div>
+  </div>`
+}
+
+function bindOrganizerControls(): void {
+  const panel = app.querySelector<HTMLElement>('.organize-panel')
+  if (!panel) return
+
+  panel.querySelectorAll<HTMLButtonElement>('[data-composition]').forEach((button) => button.addEventListener('click', () => {
+    chooseOrganizerComposition(Number(button.dataset.composition))
+  }))
+  panel.querySelectorAll<HTMLButtonElement>('[data-map-panel]').forEach((button) => button.addEventListener('click', () => {
+    toggleOrganizerPanel(button.dataset.mapPanel ?? '')
+  }))
+  panel.querySelectorAll<HTMLButtonElement>('[data-organizer-position]').forEach((button) => button.addEventListener('click', () => {
+    chooseOrganizerPosition(button.dataset.organizerPosition ?? '')
+  }))
+  panel.querySelector('[data-organize-close]')?.addEventListener('click', () => setEditor(false))
+  panel.querySelector('[data-organize-cancel]')?.addEventListener('click', () => setEditor(false))
+  panel.querySelector('[data-organize-apply]')?.addEventListener('click', applyOrganizerDraft)
+  panel.querySelector('[data-undo-organize]')?.addEventListener('click', undo)
+}
+
+function updateOrganizerPanel(focusSelector?: string): void {
+  if (!editorOpen || !organizerDraft) return
+  const panel = app.querySelector<HTMLElement>('.organize-panel')
+  if (!panel) return
+
+  const body = panel.querySelector<HTMLElement>('.organize-panel__body')
+  const scrollTop = body?.scrollTop ?? 0
+  let nextFocusSelector = focusSelector
+  if (!nextFocusSelector) {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && panel.contains(active)) {
+      if (active.dataset.composition) nextFocusSelector = `[data-composition="${active.dataset.composition}"]`
+      else if (active.dataset.mapPanel) nextFocusSelector = `[data-map-panel="${CSS.escape(active.dataset.mapPanel)}"]`
+      else if (active.dataset.organizerPosition) nextFocusSelector = `[data-organizer-position="${CSS.escape(active.dataset.organizerPosition)}"]`
+    }
+  }
+
+  panel.outerHTML = organizePanelHtml()
+  bindOrganizerControls()
+  app.querySelector<HTMLElement>('.organize-panel__body')?.scrollTo({ top: scrollTop })
+  if (nextFocusSelector) app.querySelector<HTMLElement>(nextFocusSelector)?.focus({ preventScroll: true })
 }
 
 function renderGrid() {
+  clearToolbarHideTimer()
   moreMenuAbort?.abort()
   moreMenuAbort = null
   toolbarAbort?.abort()
   toolbarAbort = null
-  clearToolbarHideTimer()
+  toolbarResizeObserver?.disconnect()
   document.body.classList.add('is-grid')
   const canUndo = history.length > 0
-  app.innerHTML = `<div class="grid-shell${editorOpen ? ' is-editor-open' : ''}">
-    <div class="toolbar-hotzone" aria-hidden="true"></div>
+  app.innerHTML = `<div class="grid-shell is-toolbar-visible${editorOpen ? ' is-editor-open' : ''}">
     <div class="toolbar" role="toolbar" aria-label="Controles">
       <button type="button" class="btn btn--load" id="btn-open-all">Abrir todos</button>
+      <button type="button" class="btn btn--ghost" id="btn-mute-all" aria-pressed="${allPanelsMuted()}">${allPanelsMuted() ? 'Ativar som de todos' : 'Mutar todos'}</button>
       <button type="button" class="btn btn--load" id="btn-add-panel"${panels.length >= MAX_PANELS ? ' disabled' : ''} aria-label="${panels.length >= MAX_PANELS ? 'Limite de 16 telas atingido' : 'Adicionar uma tela'}" title="${panels.length >= MAX_PANELS ? 'Limite de 16 telas atingido' : 'Adicionar uma tela'}">+ Adicionar tela</button>
-      <button type="button" class="btn btn--ghost" id="btn-organize">${editorOpen ? 'Concluir' : 'Organizar'}</button>
+      <button type="button" class="btn btn--danger" id="btn-remove-panel"${panels.length <= MIN_PANELS ? ' disabled' : ''} aria-label="${panels.length <= MIN_PANELS ? 'É necessário manter pelo menos uma tela' : 'Remover a última tela'}" title="${panels.length <= MIN_PANELS ? 'É necessário manter pelo menos uma tela' : 'Remover a última tela'}">- Remover tela</button>
+      <button type="button" class="btn btn--ghost" id="btn-organize">${editorOpen ? 'Cancelar organização' : 'Organizar'}</button>
       <button type="button" class="btn btn--ghost" id="btn-layout">Voltar</button>
-      <span class="toolbar__status" aria-live="polite">${layoutModeLabel()}</span>
       <label class="toolbar__count"><span>Telas <output id="panel-count-status" aria-live="polite">${panels.length}/${MAX_PANELS}</output></span><select id="panel-count" aria-label="Quantidade de telas">${Array.from({ length: MAX_PANELS }, (_, index) => `<option value="${index + 1}"${index + 1 === panels.length ? ' selected' : ''}>${index + 1}</option>`).join('')}</select></label>
       <button type="button" class="btn btn--ghost" id="btn-fullscreen">${isFullscreenActive() ? 'Minimizar' : 'Tela Cheia'}</button>
       <div class="toolbar__more"><button type="button" class="btn btn--ghost btn--icon" id="btn-more" aria-label="Mais opções" aria-haspopup="menu" aria-expanded="false" aria-controls="toolbar-more-menu">⋯</button>
         <div class="toolbar__menu" id="toolbar-more-menu" role="menu" hidden>
           <button type="button" class="btn btn--ghost" id="btn-auto" role="menuitem">Organizar automaticamente</button>
-          <button type="button" class="btn btn--ghost" id="btn-equal" role="menuitem">Todos iguais</button>
+          <button type="button" class="btn btn--ghost" id="btn-equal" role="menuitem">Sem destaques</button>
           <button type="button" class="btn btn--ghost" id="btn-undo" role="menuitem"${canUndo ? '' : ' disabled'}>Desfazer</button>
           <button type="button" class="btn btn--ghost" id="btn-clear-all" role="menuitem">Limpar todos</button>
         </div>
@@ -682,15 +1013,15 @@ function renderGrid() {
     </div>
     <div class="layout-stage grid grid--${panels.length}${editorOpen ? ' is-editing' : ''}" id="layout-stage" data-layout-mode="${layoutMode}">
       ${panels.map((panel, index) => `<div class="panel${panel.url ? ' panel--loaded' : ' panel--empty'}${highlighted.has(panel.id) ? ' is-highlighted' : ''}" data-panel-id="${escapeHtml(panel.id)}" data-slot="${index}">${panelInnerHtml(panel)}</div>`).join('')}
-      ${splitHandlesHtml()}
     </div>
-    ${movePickerHtml()}
+    ${editorOpen ? organizePanelHtml() : ''}
   </div>`
 
   app.querySelectorAll<HTMLElement>('.panel').forEach(bindPanelForm)
-  app.querySelectorAll<HTMLElement>('.split-handle').forEach(bindSplitHandle)
   app.querySelector<HTMLButtonElement>('#btn-open-all')?.addEventListener('click', openAllPanels)
+  app.querySelector<HTMLButtonElement>('#btn-mute-all')?.addEventListener('click', toggleAllMuted)
   app.querySelector<HTMLButtonElement>('#btn-add-panel')?.addEventListener('click', addPanel)
+  app.querySelector<HTMLButtonElement>('#btn-remove-panel')?.addEventListener('click', removeLastPanel)
   app.querySelector<HTMLButtonElement>('#btn-organize')?.addEventListener('click', () => setEditor(!editorOpen))
   app.querySelector<HTMLSelectElement>('#panel-count')?.addEventListener('change', (event) => setPanelCount(Number((event.target as HTMLSelectElement).value)))
   app.querySelector<HTMLButtonElement>('#btn-fullscreen')?.addEventListener('click', toggleFullscreen)
@@ -707,33 +1038,23 @@ function renderGrid() {
       render()
     })
   })
-  app.querySelector('[data-move-cancel]')?.addEventListener('click', () => { moveSource = null; renderGrid() })
-  app.querySelectorAll<HTMLButtonElement>('[data-move-to]').forEach((button) => button.addEventListener('click', () => { if (moveSource) swapPanelPositions(moveSource, button.dataset.moveTo ?? '') }))
+  bindOrganizerControls()
   bindMoreMenu()
-  bindToolbarAutoHide()
+  bindToolbar()
   renderPanelElements()
   focusPendingPanel()
 }
 
 function render() {
+  if (view === 'choose') clearToolbarHideTimer()
   moreMenuAbort?.abort()
   moreMenuAbort = null
   toolbarAbort?.abort()
   toolbarAbort = null
-  clearToolbarHideTimer()
+  toolbarResizeObserver?.disconnect()
   if (view === 'choose') renderChoose()
   else renderGrid()
 }
-
-app.addEventListener('click', (event) => {
-  if (!moveSource) return
-  const target = event.target as HTMLElement
-  if (target.closest('[data-move], [data-move-to], [data-move-cancel]')) return
-  if (!target.closest('.move-picker')) {
-    moveSource = null
-    renderGrid()
-  }
-})
 
 window.quadra?.onRequestLayout(() => scheduleSyncLayout())
 window.quadra?.onFullscreenChange((on) => {
@@ -741,10 +1062,38 @@ window.quadra?.onFullscreenChange((on) => {
   updateFullscreenButton()
   scheduleSyncLayout()
 })
+window.quadra?.onWeddbetsPlayerOpened(({ panelId, url }) => useWeddbetsPlayer(panelId, url))
+window.quadra?.onWeddbetsTargetRequired(() => {
+  weddbetsTargetId = null
+})
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return
+  if (event.defaultPrevented) return
+  if (!editorOpen) return
+  if (document.querySelector('.confirm')) return
+
+  event.preventDefault()
+  setEditor(false)
+})
 window.addEventListener('resize', () => {
-  if (view === 'grid' && layoutMode !== 'manual') buildCurrentLayout(layoutMode)
-  if (view === 'grid') renderPanelElements()
-  else scheduleSyncLayout()
+  if (view !== 'grid') {
+    scheduleSyncLayout()
+    return
+  }
+  if (layoutResizeFrame !== null) return
+  layoutResizeFrame = requestAnimationFrame(() => {
+    layoutResizeFrame = null
+    const organizerUnchanged = organizerDraft !== null &&
+      organizerDraftKey(organizerDraft, panels.length) === organizerBaselineKey
+
+    buildCurrentLayout(layoutMode, true)
+    renderPanelElements()
+
+    if (editorOpen) {
+      if (organizerUnchanged) resetOrganizerDraft()
+      updateOrganizerPanel()
+    }
+  })
 }, { passive: true })
 document.addEventListener('fullscreenchange', updateFullscreenButton)
 document.addEventListener('scroll', scheduleSyncLayout, { capture: true, passive: true })
