@@ -147,8 +147,14 @@ function shouldKeepFullscreenPriority() {
 function reconcileFullscreenPriority() {
   fullscreenPrioritySyncPending = false
   const keepPriority = shouldKeepFullscreenPriority()
-  for (const window of [mainWindow, overlayWindow]) {
-    if (!window || window.isDestroyed() || window.isAlwaysOnTop() === keepPriority) continue
+  const windows = [mainWindow, overlayWindow].filter((window): window is BaseWindow | BrowserWindow => Boolean(window && !window.isDestroyed()))
+  if (!windows.some((window) => window.isAlwaysOnTop() !== keepPriority)) return
+  // Windows can restore the owned overlay's priority without restoring its parent.
+  if (keepPriority && overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setAlwaysOnTop(false, 'screen-saver')
+  }
+  for (const window of windows) {
+    if (window.isAlwaysOnTop() === keepPriority) continue
     window.setAlwaysOnTop(keepPriority, 'screen-saver')
   }
 }
@@ -167,6 +173,26 @@ function watchFullscreenPriority(window: BaseWindow | BrowserWindow) {
   window.on('leave-full-screen', scheduleFullscreenPrioritySync)
   window.on('minimize', scheduleFullscreenPrioritySync)
   window.on('restore', scheduleFullscreenPrioritySync)
+}
+
+function setNativeFullscreen(on: boolean) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isFullScreen() === on) return
+  mainWindow.setFullScreen(on)
+}
+
+function handleBeforeInput(event: Electron.Event, input: Electron.Input) {
+  if (input.type !== 'keyDown' || (input.key !== 'Escape' && input.code !== 'Escape')) return
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFullScreen()) return
+  event.preventDefault()
+  setNativeFullscreen(false)
+}
+
+function installNativeFullscreenHandlers() {
+  app.on('web-contents-created', (_event, contents) => {
+    contents.on('before-input-event', handleBeforeInput)
+  })
+  app.on('browser-window-focus', scheduleFullscreenPrioritySync)
+  app.on('browser-window-blur', scheduleFullscreenPrioritySync)
 }
 
 function normalizeWeddbetsPlayerUrl(value: string) {
@@ -507,8 +533,8 @@ function createOverlay() {
 
 function installIpcHandlers() {
   ipcMain.handle('quadra:check-for-update', (event) => {
-    if (!isUiSender(event) || !autoUpdateController) return 'disabled'
-    return autoUpdateController.check()
+    if (!isUiSender(event)) throw new Error('Invalid update request sender')
+    return autoUpdateController?.check() ?? 'disabled'
   })
   ipcMain.on('quadra:ready', (event) => {
     if (isUiSender(event) && overlayReady) raiseOverlay()
@@ -521,7 +547,7 @@ function installIpcHandlers() {
     overlayWindow.setIgnoreMouseEvents(!interactive, { forward: true })
   })
   ipcMain.on('quadra:set-fullscreen', (event, on: unknown) => {
-    if (isUiSender(event) && typeof on === 'boolean') mainWindow?.setFullScreen(on)
+    if (isUiSender(event) && typeof on === 'boolean') setNativeFullscreen(on)
   })
   ipcMain.on('quadra:set-cursor-hidden', (event, hidden: unknown) => {
     if (isUiSender(event) && typeof hidden === 'boolean') setCursorHidden(hidden)
@@ -592,6 +618,7 @@ app.whenReady().then(() => {
   quadraSession = session.fromPartition('persist:quadra')
   quadraSession.setUserAgent(electronUserAgent)
   if (process.platform === 'win32') app.setAppUserModelId('com.quadra.multiview')
+  installNativeFullscreenHandlers()
   installIpcHandlers()
   createWindow()
   installAutoUpdater()
