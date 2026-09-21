@@ -1,7 +1,11 @@
-import { app, BaseWindow, BrowserWindow, ipcMain, session, WebContentsView } from 'electron'
+import { app, BaseWindow, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
+import electronUpdater from 'electron-updater'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Bounds, LayoutPayload, PanelPayload } from '../src/layout'
+import { createAutoUpdateController } from './update'
+
+const { autoUpdater } = electronUpdater
 
 type SlotViewState = { view: WebContentsView; url: string; cursorCssKey?: string; cursorRevision: number }
 
@@ -116,6 +120,7 @@ let cursorHidden = false
 let weddbetsTarget: { id: string; label: string } | null = null
 let visiblePanelIds = new Set<string>()
 let fullscreenPrioritySyncPending = false
+let autoUpdateController: ReturnType<typeof createAutoUpdateController> | null = null
 
 const weddbetsHomeUrl = process.env.QUADRA_WEDDBETS_URL ?? 'https://www.weddbets.com/'
 
@@ -344,6 +349,23 @@ function destroyAllSlotViews() {
   for (const index of [...slotViews.keys()]) destroySlotView(index)
 }
 
+function closeOwnedWindows() {
+  destroyAllSlotViews()
+  if (weddbetsWindow && !weddbetsWindow.isDestroyed()) weddbetsWindow.close()
+  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.close()
+}
+
+function installAutoUpdater() {
+  autoUpdateController = createAutoUpdateController({
+    enabled: app.isPackaged && process.platform === 'win32',
+    updater: autoUpdater,
+    showMessageBox: (options) => dialog.showMessageBox(options),
+    quitAndInstall: () => autoUpdater.quitAndInstall(),
+    log: (message) => console.warn(`[updater] ${message}`),
+  })
+  void autoUpdateController.check()
+}
+
 function createSlotView(id: string, url: string, muted: boolean) {
   const view = new WebContentsView({
     webPreferences: {
@@ -568,6 +590,7 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') app.setAppUserModelId('com.quadra.multiview')
   installIpcHandlers()
   createWindow()
+  installAutoUpdater()
   app.on('activate', () => {
     if (!mainWindow) createWindow()
   })
@@ -578,11 +601,12 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', (event) => {
-  if (shuttingDown) return
+  if (shuttingDown) {
+    closeOwnedWindows()
+    return
+  }
   event.preventDefault()
   shuttingDown = true
-  destroyAllSlotViews()
-  if (weddbetsWindow && !weddbetsWindow.isDestroyed()) weddbetsWindow.close()
-  if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.close()
+  closeOwnedWindows()
   app.quit()
 })

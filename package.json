@@ -1,7 +1,7 @@
 {
   "name": "quadra-multiview",
   "private": true,
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Quadra multi-view desktop com painéis independentes no Electron",
   "type": "module",
   "main": "out/main/main.js",
@@ -9,15 +9,17 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
-    "test": "npm run test:routing && node --experimental-strip-types --test tests/layout.test.ts",
+    "test": "npm run test:routing && node --experimental-strip-types --test tests/layout.test.ts tests/update-flow.test.ts",
     "test:app": "node tests/app-integration.cjs",
     "test:close": "node tests/app-close-smoke.cjs",
     "test:packaged": "node tests/packaged-smoke.cjs",
     "test:routing": "node --experimental-strip-types --test tests/routing.test.ts",
     "test:renderer": "node tests/renderer-smoke.cjs",
     "test:toolbar": "node tests/toolbar-smoke.cjs",
+    "test:release-metadata": "node tests/metadata-check.cjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "dist": "npm run build && electron-builder --win nsis"
+    "dist": "npm run build && electron-builder --win nsis --publish never",
+    "dist:release": "npm run build && electron-builder --win nsis --publish never"
   },
   "build": {
     "appId": "com.quadra.multiview",
@@ -31,7 +33,17 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "public/quadra.ico"
+      "icon": "public/quadra.ico",
+      "verifyUpdateCodeSignature": true
+    },
+    "nsis": {
+      "artifactName": "Quadra-Setup-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "bernard-014",
+      "repo": "multiview-desktop",
+      "releaseType": "release"
     }
   },
   "devDependencies": {
@@ -43,6 +55,7 @@
     "vite": "^7.3.6"
   },
   "dependencies": {
+    "electron-updater": "6.8.9",
     "yalps": "0.6.4"
   }
 }

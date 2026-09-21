@@ -1,0 +1,100 @@
+name: Publicar release Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Validar tag da versão
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node tests/metadata-check.cjs --tag-only $env:RELEASE_TAG
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Testes
+        run: npm test
+
+      - name: Gerar instalador NSIS sem certificado
+        shell: pwsh
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run dist:release
+
+      - name: Validar artefatos e metadata
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node tests/metadata-check.cjs $env:RELEASE_TAG
+
+      - name: Publicar GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tag = $env:RELEASE_TAG
+          $repo = 'bernard-014/multiview-desktop'
+          $assets = @(
+            "release/Quadra-Setup-$version.exe"
+            "release/Quadra-Setup-$version.exe.blockmap"
+            "release/latest.yml"
+          )
+
+          $releaseJson = gh release view $tag --repo $repo --json isDraft,tagName 2>$null
+          $viewStatus = $LASTEXITCODE
+          if ($viewStatus -eq 0) {
+            $release = $releaseJson | ConvertFrom-Json
+            if ($release.tagName -ne $tag) {
+              throw "Release retornado para tag inesperada: $($release.tagName)."
+            }
+            if (-not $release.isDraft) {
+              throw "Release $tag já está publicado; recusando sobrescrever assets."
+            }
+          } elseif ($viewStatus -eq 1) {
+            gh release create $tag --repo $repo --verify-tag --draft --title "Quadra $tag" --generate-notes
+            if ($LASTEXITCODE -ne 0) {
+              throw "Não foi possível criar o draft $tag."
+            }
+          } else {
+            throw "Falha inesperada ao consultar o release $tag (exit $viewStatus)."
+          }
+
+          foreach ($asset in $assets) {
+            gh release upload $tag $asset --repo $repo --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Falha ao enviar o asset $asset."
+            }
+          }
+
+          gh release edit $tag --repo $repo --draft=false --latest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao publicar o release $tag depois do upload dos assets."
+          }
+
