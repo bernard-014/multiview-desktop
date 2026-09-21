@@ -1,4 +1,5 @@
 import './style.css'
+import { version } from '../package.json'
 import { normalizeUrl } from './routing'
 import {
   buildLayoutTree,
@@ -32,7 +33,7 @@ type LayoutSnapshot = {
 }
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const APP_VERSION = 'v1.10'
+const APP_VERSION = `v${version}`
 const MIN_PANELS = 1
 const MAX_PANELS = 16
 const HISTORY_LIMIT = 24

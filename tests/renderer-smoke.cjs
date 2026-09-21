@@ -417,7 +417,7 @@ async function run() {
     `)
     if (result.error) throw new Error(result.error)
 
-    assert.equal(result.version, 'v1.10')
+    assert.equal(result.version, 'v' + require('../package.json').version)
     assert.equal(result.layouts.length, 16)
     for (const layout of result.layouts) {
       assert.equal(layout.count, layout.expectedCount)

@@ -37,6 +37,7 @@ export function createAutoUpdateController({
   let checkPromise: Promise<UpdateCheckResult> | null = null
   let downloadedInfo: UpdateInfo | null = null
   let checkError = false
+  let installPromptOpen = false
 
   if (!enabled) return { check: async () => 'disabled', getState: () => state }
 
@@ -72,6 +73,8 @@ export function createAutoUpdateController({
   }
 
   const promptInstall = async (info: UpdateInfo) => {
+    if (installPromptOpen) return
+    installPromptOpen = true
     try {
       const result = await showMessageBox({
         type: 'info',
@@ -89,6 +92,8 @@ export function createAutoUpdateController({
     } catch {
       state = 'downloaded'
       log('Falha ao preparar a instalação da atualização.')
+    } finally {
+      installPromptOpen = false
     }
   }
 
@@ -118,11 +123,12 @@ export function createAutoUpdateController({
   })
 
   const check = async (): Promise<UpdateCheckResult> => {
+    if (checkPromise) return checkPromise
     if (state === 'downloaded' && downloadedInfo) {
       void promptInstall(downloadedInfo)
       return 'ready' as const
     }
-    if (state !== 'idle') return checkPromise ?? Promise.resolve('busy' as const)
+    if (state !== 'idle') return 'busy'
     checkError = false
     state = 'checking'
     const pending = updater.checkForUpdates()

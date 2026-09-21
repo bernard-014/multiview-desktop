@@ -20,13 +20,13 @@ O instalador é escrito em `release/`. Depois de instalado, o programa funciona 
 
 ## Atualizações automáticas no Windows
 
-Somente o aplicativo empacotado para Windows consulta o release estável do GitHub ao abrir. Se houver uma versão nova, o Quadra pergunta antes de baixar; depois do download, pergunta novamente antes de reiniciar. **Reiniciar e instalar** interrompe os painéis abertos. **Agora não** e **Depois** não instalam nada em segundo plano; a atualização pode ser aceita na próxima abertura.
+Somente o aplicativo empacotado para Windows consulta o release estável do GitHub ao abrir. Se houver uma versão nova, o Quadra pergunta antes de baixar; depois do download, pergunta novamente antes de reiniciar. **Reiniciar e instalar** interrompe os painéis abertos. **Agora não** e **Depois** não instalam nada em segundo plano; a atualização pode ser aceita na próxima abertura ou pelo botão **Verificar atualizações** na tela inicial. Esse botão também reabre a confirmação de instalação após escolher **Depois**.
 
 O primeiro build com o updater precisa ser instalado manualmente. A distribuição atual para conhecidos é sem certificado de assinatura Windows: o instalador deve ser obtido do release e aceito manualmente.
 
-O workflow `.github/workflows/windows-release.yml` roda somente quando uma tag `v*` é enviada. Antes de publicar, ele exige que a tag seja exatamente `v${package.version}`, executa `npm ci`, typecheck, testes e build NSIS, e valida os nomes/metadata dos artefatos. Para preparar a versão `1.0.9` após a revisão:
+O workflow `.github/workflows/windows-release.yml` roda somente quando uma tag `v*` é enviada. Antes de publicar, ele exige que a tag seja exatamente `v${package.version}`, executa `npm ci`, typecheck, testes e build NSIS, e valida os nomes/metadata dos artefatos. Para preparar a versão `1.0.10` após a revisão:
 
-Não execute os dois últimos comandos durante esta preparação; eles são o envio explícito que inicia o workflow.
+Faça o merge do PR antes de criar a tag: ela deve apontar para o commit aprovado na branch principal, cujo package.json contém a mesma versão. Aprovar ou fazer merge do PR, sozinho, não publica um release. Os comandos de tag e push abaixo iniciam a publicação.
 
 ```bash
 npm ci
@@ -34,11 +34,12 @@ npm run typecheck
 npm test
 npm run dist:release
 npm run test:release-metadata
-git tag v1.0.9
-git push multiview-desktop v1.0.9
+git fetch multiview-desktop
+git tag v1.0.10 multiview-desktop/feature/dynamic-panel-layout
+git push multiview-desktop v1.0.10
 ```
 
-O workflow publica no release do repositório `bernard-014/multiview-desktop` `Quadra-Setup-1.0.9.exe`, `Quadra-Setup-1.0.9.exe.blockmap` e `latest.yml`, com os nomes exatos gerados em `release/`. O `latest.yml` aponta para o instalador e seu hash; sem ele o updater não encontra a versão. O `.blockmap` permite o download diferencial e também deve ser publicado. Não renomeie esses arquivos depois de gerar o metadata.
+O workflow publica no release do repositório `bernard-014/multiview-desktop` `Quadra-Setup-1.0.10.exe`, `Quadra-Setup-1.0.10.exe.blockmap` e `latest.yml`, com os nomes exatos gerados em `release/`. O `latest.yml` aponta para o instalador e seu hash; sem ele o updater não encontra a versão. O `.blockmap` permite o download diferencial e também deve ser publicado. Não renomeie esses arquivos depois de gerar o metadata.
 
 `npm run dist` e `npm run dist:release` são builds locais sem publicação; nenhum deles exige certificado. No CI, `CSC_IDENTITY_AUTO_DISCOVERY=false` evita procurar certificado automaticamente, enquanto `verifyUpdateCodeSignature: true` permanece ativo. Sem certificado, o `app-update.yml` não contém `publisherName`, então o `NsisUpdater` não tem identidade para validar assinatura: não declare esses instaladores como assinados. O updater ainda usa HTTPS do GitHub, hash SHA-512 do `latest.yml` e `disableWebInstaller`; essas verificações não devem ser desativadas. O workflow usa somente o `GITHUB_TOKEN` efêmero com `contents: write` para criar/atualizar o release; nenhum token é gravado no repositório ou no aplicativo.
 

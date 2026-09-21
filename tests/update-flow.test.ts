@@ -49,6 +49,30 @@ function controllerFor(
 
 const nextTick = () => new Promise<void>((resolve) => setImmediate(resolve))
 
+test('não duplica o diálogo de instalação e permite reabrir após Depois', async () => {
+  const updater = fakeUpdater()
+  let dialogs = 0
+  let dismiss!: (value: MessageBoxReturnValue) => void
+  const controller = createAutoUpdateController({
+    enabled: true,
+    updater: updater as unknown as AppUpdater,
+    showMessageBox: () => {
+      dialogs += 1
+      return new Promise((resolve) => { dismiss = resolve })
+    },
+    quitAndInstall: () => {},
+  })
+  updater.emit('update-downloaded', { version: '1.0.10' })
+  await Promise.all([controller.check(), controller.check()])
+  assert.equal(dialogs, 1)
+  dismiss({ response: 1 })
+  await nextTick()
+  assert.equal(await controller.check(), 'ready')
+  assert.equal(dialogs, 2)
+  dismiss({ response: 1 })
+  await nextTick()
+})
+
 test('só baixa após consentimento, não duplica operações e adia sem instalar ao sair', async () => {
   const updater = fakeUpdater()
   const dialogs: MessageBoxOptions[] = []
