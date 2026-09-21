@@ -81,6 +81,13 @@ async function run() {
         }
         const result = { version: document.querySelector('.app-version')?.textContent ?? '', layouts: [], interactions: {} }
         result.interactions.chooserHasNoCurrentHighlight = document.querySelectorAll('.chooser__card.is-current').length === 0
+        const updateButton = document.querySelector('#btn-check-updates')
+        const updateStatus = document.querySelector('#update-status')
+        result.interactions.updateButtonIsAccessible = updateButton?.getAttribute('aria-describedby') === 'update-status' &&
+          updateStatus?.getAttribute('role') === 'status' && updateStatus?.getAttribute('aria-live') === 'polite'
+        updateButton.click()
+        await waitFrame()
+        result.interactions.updateButtonReportsUnavailableInDev = updateStatus.textContent.includes('instalador Windows')
 
         document.querySelector('#btn-start-one').click()
         await waitFrame()
@@ -423,6 +430,8 @@ async function run() {
     assert.equal(result.interactions.twoHighlightsHaveMoreArea, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.startsWithOne, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.chooserHasNoCurrentHighlight, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.updateButtonIsAccessible, true, JSON.stringify(result.interactions))
+    assert.equal(result.interactions.updateButtonReportsUnavailableInDev, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.singlePanelTrashDisabled, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.toolbarRemoveDisabledAtOne, true, JSON.stringify(result.interactions))
     assert.equal(result.interactions.addsPanel, true, JSON.stringify(result.interactions))

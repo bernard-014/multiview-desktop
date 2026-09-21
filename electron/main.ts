@@ -506,6 +506,10 @@ function createOverlay() {
 }
 
 function installIpcHandlers() {
+  ipcMain.handle('quadra:check-for-update', (event) => {
+    if (!isUiSender(event) || !autoUpdateController) return 'disabled'
+    return autoUpdateController.check()
+  })
   ipcMain.on('quadra:ready', (event) => {
     if (isUiSender(event) && overlayReady) raiseOverlay()
   })

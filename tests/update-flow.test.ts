@@ -11,7 +11,7 @@ type FakeUpdater = EventEmitter & {
   allowPrerelease: boolean
   allowDowngrade: boolean
   disableWebInstaller: boolean
-  checkForUpdates: () => Promise<void>
+  checkForUpdates: () => Promise<void | { isUpdateAvailable?: boolean }>
   downloadUpdate: () => Promise<string[]>
 }
 
@@ -68,6 +68,7 @@ test('só baixa após consentimento, não duplica operações e adia sem instala
   const controller = controllerFor(updater, [0, 1], dialogs, () => { quitCalls += 1 })
 
   const checkPromise = controller.check()
+  const duplicateCheck = controller.check()
   await nextTick()
   assert.equal(controller.getState(), 'checking')
   updater.emit('update-available', { version: '1.0.10' })
@@ -87,11 +88,13 @@ test('só baixa após consentimento, não duplica operações e adia sem instala
   updater.emit('update-available', { version: '1.0.10' })
   await nextTick()
   assert.equal(dialogs.length, 2)
-  const duplicateCheck = controller.check()
   assert.equal(checks, 1)
   resolveCheck()
-  await Promise.all([checkPromise, duplicateCheck])
+  assert.deepEqual(await Promise.all([checkPromise, duplicateCheck]), ['available', 'available'])
   assert.equal(quitCalls, 0)
+  assert.equal(await controller.check(), 'ready')
+  await nextTick()
+  assert.equal(dialogs.length, 3)
 })
 
 test('instala somente quando o segundo diálogo é confirmado', async () => {
@@ -129,18 +132,17 @@ test('recusa, modo desabilitado e falhas de consulta/download não bloqueiam o a
   })
   await disabled.check()
   assert.equal(disabledChecks, 0)
+  assert.equal(await disabled.check(), 'disabled')
 
   const refusedUpdater = fakeUpdater()
   let refusedDownloads = 0
-  refusedUpdater.checkForUpdates = async () => {
-    refusedUpdater.emit('update-available', { version: '1.0.10' })
-  }
+  refusedUpdater.checkForUpdates = async () => ({ isUpdateAvailable: false })
   refusedUpdater.downloadUpdate = async () => {
     refusedDownloads += 1
     return []
   }
   const refused = controllerFor(refusedUpdater, [1], [], () => {})
-  await refused.check()
+  assert.equal(await refused.check(), 'updated')
   await nextTick()
   assert.equal(refused.getState(), 'idle')
   assert.equal(refusedDownloads, 0)
@@ -148,8 +150,15 @@ test('recusa, modo desabilitado e falhas de consulta/download não bloqueiam o a
   const failedQueryUpdater = fakeUpdater()
   failedQueryUpdater.checkForUpdates = async () => { throw new Error('offline fixture') }
   const failedQuery = controllerFor(failedQueryUpdater, [], [], () => {})
-  await failedQuery.check()
+  assert.equal(await failedQuery.check(), 'error')
   assert.equal(failedQuery.getState(), 'idle')
+
+  const emittedErrorUpdater = fakeUpdater()
+  emittedErrorUpdater.checkForUpdates = async () => {
+    emittedErrorUpdater.emit('error', new Error('offline event fixture'))
+  }
+  const emittedError = controllerFor(emittedErrorUpdater, [], [], () => {})
+  assert.equal(await emittedError.check(), 'error')
 
   const failedDownloadUpdater = fakeUpdater()
   failedDownloadUpdater.checkForUpdates = async () => {
@@ -162,4 +171,3 @@ test('recusa, modo desabilitado e falhas de consulta/download não bloqueiam o a
   await nextTick()
   assert.equal(failedDownload.getState(), 'idle')
 })
-

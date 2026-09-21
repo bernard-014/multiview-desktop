@@ -1,6 +1,7 @@
 import type { LayoutPayload } from './layout'
 
 type QuadraBridge = {
+  checkForUpdate: () => Promise<UpdateCheckResult>
   ready: () => void
   setLayout: (payload: LayoutPayload) => void
   setFullscreen: (on: boolean) => void
@@ -14,6 +15,8 @@ type QuadraBridge = {
   onWeddbetsTargetRequired: (callback: () => void) => () => void
   onWeddbetsError: (callback: (payload: { message: string; panelId?: string; url?: string }) => void) => () => void
 }
+
+type UpdateCheckResult = 'updated' | 'available' | 'ready' | 'busy' | 'disabled' | 'error'
 
 declare global {
   interface Window {
