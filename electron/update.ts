@@ -3,6 +3,7 @@ import type { AppUpdater } from 'electron-updater'
 
 type UpdateInfo = { version?: unknown }
 type UpdateState = 'idle' | 'checking' | 'prompting-download' | 'downloading' | 'downloaded' | 'installing'
+export type UpdateCheckResult = 'updated' | 'available' | 'ready' | 'busy' | 'disabled' | 'error'
 
 type UpdateDialog = (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>
 
@@ -16,7 +17,7 @@ type AutoUpdateOptions = {
 }
 
 export type AutoUpdateController = {
-  check: () => Promise<void>
+  check: () => Promise<UpdateCheckResult>
   getState: () => UpdateState
 }
 
@@ -33,9 +34,12 @@ export function createAutoUpdateController({
   log = () => {},
 }: AutoUpdateOptions): AutoUpdateController {
   let state: UpdateState = 'idle'
-  let checkPromise: Promise<void> | null = null
+  let checkPromise: Promise<UpdateCheckResult> | null = null
+  let downloadedInfo: UpdateInfo | null = null
+  let checkError = false
+  let installPromptOpen = false
 
-  if (!enabled) return { check: async () => {}, getState: () => state }
+  if (!enabled) return { check: async () => 'disabled', getState: () => state }
 
   updater.autoDownload = false
   updater.autoInstallOnAppQuit = false
@@ -69,6 +73,8 @@ export function createAutoUpdateController({
   }
 
   const promptInstall = async (info: UpdateInfo) => {
+    if (installPromptOpen) return
+    installPromptOpen = true
     try {
       const result = await showMessageBox({
         type: 'info',
@@ -86,6 +92,8 @@ export function createAutoUpdateController({
     } catch {
       state = 'downloaded'
       log('Falha ao preparar a instalação da atualização.')
+    } finally {
+      installPromptOpen = false
     }
   }
 
@@ -96,6 +104,7 @@ export function createAutoUpdateController({
   })
   updater.on('update-downloaded', (info) => {
     if (state === 'downloaded' || state === 'installing') return
+    downloadedInfo = info
     state = 'downloaded'
     void promptInstall(info)
   })
@@ -103,6 +112,7 @@ export function createAutoUpdateController({
     if (state === 'downloading' || state === 'prompting-download') state = 'idle'
   })
   updater.on('error', () => {
+    if (state === 'checking') checkError = true
     if (state === 'installing') {
       state = 'downloaded'
       onInstallError?.()
@@ -112,22 +122,33 @@ export function createAutoUpdateController({
     log('Não foi possível consultar ou baixar a atualização.')
   })
 
-  const check = async () => {
-    if (state !== 'idle') return checkPromise ?? Promise.resolve()
+  const check = async (): Promise<UpdateCheckResult> => {
+    if (checkPromise) return checkPromise
+    if (state === 'downloaded' && downloadedInfo) {
+      void promptInstall(downloadedInfo)
+      return 'ready' as const
+    }
+    if (state !== 'idle') return 'busy'
+    checkError = false
     state = 'checking'
-    checkPromise = updater.checkForUpdates()
-      .then(() => {})
-      .catch(() => {
+    const pending = updater.checkForUpdates()
+      .then((result): UpdateCheckResult => {
+        if (checkError) return 'error'
+        if (state !== 'checking') return 'available'
+        return result?.isUpdateAvailable ? 'available' : 'updated'
+      })
+      .catch((): UpdateCheckResult => {
         state = 'idle'
         log('Não foi possível consultar atualizações.')
+        return 'error'
       })
       .finally(() => {
         checkPromise = null
         if (state === 'checking') state = 'idle'
       })
-    await checkPromise
+    checkPromise = pending
+    return pending
   }
 
   return { check, getState: () => state }
 }
-

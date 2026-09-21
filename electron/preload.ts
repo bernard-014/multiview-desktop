@@ -7,6 +7,7 @@ const quadra = {
   setFullscreen: (on: boolean) => ipcRenderer.send('quadra:set-fullscreen', on),
   setChromeInteractive: (interactive: boolean) => ipcRenderer.send('quadra:set-chrome-interactive', interactive),
   setCursorHidden: (hidden: boolean) => ipcRenderer.send('quadra:set-cursor-hidden', hidden),
+  checkForUpdate: () => ipcRenderer.invoke('quadra:check-for-update'),
   openWeddbets: (panelId: string, label: string) => ipcRenderer.send('quadra:open-weddbets', panelId, label),
   setWeddbetsTarget: (panelId: string | null, label = '') => ipcRenderer.send('quadra:set-weddbets-target', panelId, label),
   onRequestLayout: (callback: () => void) => {

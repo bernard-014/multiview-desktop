@@ -2,6 +2,7 @@
 // --auto runs assertions; --scoped-topmost verifies the production priority policy.
 // --overlay-fullscreen tests the rejected fullscreen-only alternative.
 // Isolated manual Windows diagnostic. Close the test window to finish.
+const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const os = require('node:os')
@@ -11,9 +12,17 @@ const prototype = process.argv.includes('--overlay-fullscreen')
 const topmost = process.argv.includes('--scoped-topmost')
 const output = path.join(root, 'artifacts/toolbar-checks', topmost ? 'fullscreen-topmost' : prototype ? 'fullscreen-prototype' : automatic ? 'fullscreen-automatic' : 'fullscreen-diagnostic')
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+async function until(check, label) {
+  const deadline = Date.now() + 15000
+  while (Date.now() < deadline) {
+    if (await check()) return
+    await wait(50)
+  }
+  throw new Error(`Timeout: ${label}`)
+}
 
 async function worker() {
-  const { app, BaseWindow, BrowserWindow, desktopCapturer, screen } = require('electron')
+  const { app, BaseWindow, BrowserWindow, desktopCapturer, screen, webContents } = require('electron')
   const { pathToFileURL } = require('node:url')
   fs.mkdirSync(output, { recursive: true })
   await import(pathToFileURL(path.join(root, 'out/main/main.js')).href)
@@ -25,6 +34,7 @@ async function worker() {
   }
   if (!overlay) throw new Error('Overlay did not load')
   const main = BaseWindow.getAllWindows().find((win) => win !== overlay)
+  const pages = () => webContents.getAllWebContents().filter((page) => page.getURL().startsWith(process.env.QUADRA_DIAGNOSTIC_URL))
   if (prototype) {
     const setFullscreen = main.setFullScreen.bind(main)
     main.setFullScreen = (on) => {
@@ -55,6 +65,20 @@ async function worker() {
     fs.writeFileSync(path.join(output, `${name}.json`), JSON.stringify(snapshot, null, 2))
     console.log(JSON.stringify({ capture: name, ...snapshot }))
   }
+  function assertFullscreenPriority(label, expected) {
+    if (!topmost) return
+    assert.equal(main.isAlwaysOnTop(), expected, `${label}: main priority`)
+    assert.equal(overlay.isAlwaysOnTop(), expected, `${label}: overlay priority`)
+  }
+  async function pressEscape(label, contents) {
+    contents.focus()
+    await wait(150)
+    contents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    contents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+    await until(() => !main.isFullScreen() && (!topmost || (!main.isAlwaysOnTop() && !overlay.isAlwaysOnTop())), `${label}: Escape leaves fullscreen`)
+    assertFullscreenPriority(`${label} after Escape`, false)
+    await capture(`escape-${label}`)
+  }
   for (const [role, win] of [['main', main], ['overlay', overlay]]) {
     for (const event of ['focus', 'blur', 'enter-full-screen', 'leave-full-screen']) {
       win.on(event, () => {
@@ -83,7 +107,6 @@ async function worker() {
   await capture('ready-five-videos')
   console.log('READY: use the window normally; screenshots and focus events are saved in ' + output)
   if (automatic) {
-    const assert = require('node:assert/strict')
     const ui = (code) => overlay.webContents.executeJavaScript(code, true)
     const click = async (selector) => {
       overlay.focus()
@@ -95,24 +118,20 @@ async function worker() {
       assert.equal(main.isFullScreen(), true)
       main.focus()
       await wait(800)
+      assertFullscreenPriority(`round ${round} video focus`, true)
       await capture(`round-${round}-video-focus`)
       await click('#btn-organize')
       assert.equal(await ui("Boolean(document.querySelector('.organize-panel'))"), true)
       assert.equal(main.isFullScreen(), true)
-      if (topmost) {
-        assert.equal(main.isAlwaysOnTop(), true, `round ${round}: main priority while fullscreen`)
-        assert.equal(overlay.isAlwaysOnTop(), true, `round ${round}: overlay priority while fullscreen`)
-      }
+      assertFullscreenPriority(`round ${round} organizer`, true)
       await capture(`round-${round}-organizer`)
       await click('[data-organize-cancel]')
       await click('#btn-mute-all')
+      assertFullscreenPriority(`round ${round} mute`, true)
       await capture(`round-${round}-mute`)
       await click('#btn-fullscreen')
       assert.equal(main.isFullScreen(), false)
-      if (topmost) {
-        assert.equal(main.isAlwaysOnTop(), false, `round ${round}: main priority after fullscreen`)
-        assert.equal(overlay.isAlwaysOnTop(), false, `round ${round}: overlay priority after fullscreen`)
-      }
+      assertFullscreenPriority(`round ${round} windowed`, false)
       await capture(`round-${round}-windowed`)
     }
     await click('#btn-fullscreen')
@@ -123,6 +142,23 @@ async function worker() {
     await wait(300)
     assert.equal(await ui("document.querySelectorAll('input[name=url]')[5].value"), process.env.QUADRA_DIAGNOSTIC_URL)
     await capture('sixth-panel-url-typed')
+    await until(() => main.isFullScreen(), 're-enter fullscreen for toolbar Escape')
+    await ui("document.querySelector('#btn-organize').focus()")
+    await pressEscape('overlay-toolbar', overlay.webContents)
+    await click('#btn-fullscreen')
+    await until(() => main.isFullScreen(), 're-enter fullscreen for main Escape')
+    main.focus()
+    await wait(150)
+    const focusedMainContents = webContents.getFocusedWebContents()
+    assert.ok(focusedMainContents, 'main focus must resolve to a focused WebContents')
+    await pressEscape('main', focusedMainContents)
+    await click('#btn-fullscreen')
+    await until(() => main.isFullScreen(), 're-enter fullscreen for panel Escape')
+    const focusedPanel = pages()[0]
+    assert.ok(focusedPanel, 'panel WebContents must be available for Escape')
+    await pressEscape('panel', focusedPanel)
+    await click('#btn-fullscreen')
+    await until(() => main.isFullScreen(), 're-enter fullscreen after Escape checks')
     await ui("document.querySelectorAll('input[name=url]')[5].blur(); document.dispatchEvent(new MouseEvent('mousemove', {clientX:400,clientY:300,bubbles:true}))")
     overlay.webContents.sendInputEvent({ type: 'mouseMove', x: 400, y: 300 })
     main.focus()
@@ -131,10 +167,12 @@ async function worker() {
       protectedUi: document.querySelector('.toolbar:hover, .toolbar__menu:not([hidden]), .organize-panel, .confirm')?.className ?? null })`)
     console.log('IDLE ' + JSON.stringify(idle))
     assert.equal(idle.hidden, true, JSON.stringify(idle))
+    assertFullscreenPriority('toolbar idle hidden', true)
     await capture('toolbar-idle-hidden')
     await ui("document.dispatchEvent(new MouseEvent('mousemove', {clientX:500,clientY:300,bubbles:true}))")
     await click('#btn-organize')
     assert.equal(main.isFullScreen(), true)
+    assertFullscreenPriority('organizer after idle', true)
     await capture('organizer-after-idle')
     if (topmost) {
       const other = new BrowserWindow({ width: 640, height: 400, title: 'Quadra diagnostic - other window' })
@@ -142,14 +180,12 @@ async function worker() {
       other.focus()
       await wait(900)
       assert.equal(other.isFocused(), true)
-      assert.equal(main.isAlwaysOnTop(), false)
-      assert.equal(overlay.isAlwaysOnTop(), false)
+      assertFullscreenPriority('external window', false)
       await capture('external-window-priority-released')
       other.close()
       main.focus()
       await wait(900)
-      assert.equal(main.isAlwaysOnTop(), true)
-      assert.equal(overlay.isAlwaysOnTop(), true)
+      assertFullscreenPriority('returned focus', true)
       await capture('return-priority-restored')
       main.minimize()
       await wait(900)
@@ -159,7 +195,7 @@ async function worker() {
       main.focus()
       await wait(900)
       assert.equal(main.isFullScreen(), true)
-      assert.equal(main.isAlwaysOnTop(), true)
+      assertFullscreenPriority('restored after minimize', true)
       await capture('restored-after-minimize')
     }
     console.log('PASS: three fullscreen cycles, native focus transitions, organizer, mute, sixth panel, URL typing, idle/reveal. Taskbar requires screenshot review.')

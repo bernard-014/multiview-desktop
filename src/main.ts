@@ -1,4 +1,5 @@
 import './style.css'
+import { version } from '../package.json'
 import { normalizeUrl } from './routing'
 import {
   buildLayoutTree,
@@ -32,7 +33,7 @@ type LayoutSnapshot = {
 }
 
 const app = document.querySelector<HTMLDivElement>('#app')!
-const APP_VERSION = 'v1.10'
+const APP_VERSION = `v${version}`
 const MIN_PANELS = 1
 const MAX_PANELS = 16
 const HISTORY_LIMIT = 24
@@ -832,6 +833,45 @@ function previewHtml(count: number): string {
   return `<div class="chooser__preview">${calculateLayout(tree).rects.map((rect) => `<span style="left:${rect.x * 100}%;top:${rect.y * 100}%;width:${rect.width * 100}%;height:${rect.height * 100}%"></span>`).join('')}</div><span class="chooser__composition">${escapeHtml(description?.label ?? `${count} sem destaques`)}</span>`
 }
 
+type UpdateCheckResult = Awaited<ReturnType<NonNullable<NonNullable<Window['quadra']>['checkForUpdate']>>>
+
+function updateCheckMessage(result: UpdateCheckResult): string {
+  switch (result) {
+    case 'updated': return 'Você já está usando a versão mais recente.'
+    case 'available': return 'Atualização disponível. Escolha uma opção na janela do Quadra.'
+    case 'ready': return 'Atualização pronta. Escolha se deseja reiniciar e instalar.'
+    case 'busy': return 'Uma consulta ou download já está em andamento.'
+    case 'error': return 'Não foi possível consultar atualizações agora.'
+    case 'disabled': return 'Atualizações automáticas ficam disponíveis no instalador Windows.'
+  }
+}
+
+function bindUpdateCheck(): void {
+  const button = app.querySelector<HTMLButtonElement>('#btn-check-updates')
+  const status = app.querySelector<HTMLElement>('#update-status')
+  if (!button || !status) return
+
+  button.addEventListener('click', () => {
+    if (button.disabled) return
+    const check = window.quadra?.checkForUpdate
+    if (!check) {
+      status.textContent = updateCheckMessage('disabled')
+      return
+    }
+
+    button.disabled = true
+    button.setAttribute('aria-busy', 'true')
+    status.textContent = 'Consultando atualizações...'
+    void check()
+      .then((result) => { status.textContent = updateCheckMessage(result) })
+      .catch(() => { status.textContent = updateCheckMessage('error') })
+      .finally(() => {
+        button.disabled = false
+        button.removeAttribute('aria-busy')
+      })
+  })
+}
+
 function renderChoose() {
   clearToolbarHideTimer()
   organizerDraft = null
@@ -849,12 +889,13 @@ function renderChoose() {
   app.innerHTML = `<main class="chooser"><div class="chooser__atmosphere" aria-hidden="true"></div><div class="chooser__content">
     <div class="brand-lockup"><p class="brand">Quadra</p><span class="app-version" aria-label="Versão ${APP_VERSION}">${APP_VERSION}</span></div>
     <h1>Quantas telas?</h1><p class="lede">Escolha de 1 a 16 jogos para acompanhar ao mesmo tempo.</p>
-    <div class="chooser__start"><button type="button" class="btn btn--load" id="btn-start-one">Começar com uma tela</button><span>Adicione outras telas quando quiser.</span></div>
+    <div class="chooser__start"><button type="button" class="btn btn--load" id="btn-start-one">Começar com uma tela</button><span>Adicione outras telas quando quiser.</span><button type="button" class="btn btn--ghost" id="btn-check-updates" aria-describedby="update-status">Verificar atualizações</button><span id="update-status" role="status" aria-live="polite"></span></div>
     <div class="chooser__options" role="group" aria-label="Número de telas">
       ${Array.from({ length: MAX_PANELS }, (_, index) => index + 1).map((count) => `<button type="button" class="chooser__card" data-count="${count}">${previewHtml(count)}<span class="chooser__count">${count}</span><span class="chooser__label">${count === 1 ? 'tela' : 'telas'}</span></button>`).join('')}
     </div>
   </div></main>`
   app.querySelector<HTMLButtonElement>('#btn-start-one')?.addEventListener('click', startWithOnePanel)
+  bindUpdateCheck()
   app.querySelectorAll<HTMLButtonElement>('.chooser__card').forEach((button) => button.addEventListener('click', () => selectCount(Number(button.dataset.count))))
   scheduleSyncLayout()
 }
