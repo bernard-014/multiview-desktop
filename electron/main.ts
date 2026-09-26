@@ -1,8 +1,9 @@
-import { app, BaseWindow, BrowserWindow, dialog, ipcMain, session, WebContentsView } from 'electron'
+import { app, BaseWindow, BrowserWindow, components, dialog, ipcMain, session, WebContentsView } from 'electron'
 import electronUpdater from 'electron-updater'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Bounds, LayoutPayload, PanelPayload } from '../src/layout'
+import { prepareProtectedPlayback } from './protected-playback'
 import { createAutoUpdateController } from './update'
 
 const { autoUpdater } = electronUpdater
@@ -15,7 +16,7 @@ const appIconPath = isDev
   ? join(process.cwd(), 'public', 'quadra.ico')
   : join(__dirname, '../renderer/quadra.ico')
 const electronUserAgent =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`
 const videoContainCss = `
   video {
     object-fit: contain !important;
@@ -614,7 +615,17 @@ function createWindow() {
   scheduleFullscreenPrioritySync()
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await prepareProtectedPlayback(
+    () => components.whenReady(),
+    (error) => {
+      console.error('Widevine initialization failed:', error)
+      dialog.showErrorBox(
+        'Não foi possível preparar a reprodução protegida',
+        'O Quadra será aberto, mas conteúdo protegido pode não reproduzir. Verifique sua conexão e reinicie o Quadra para tentar instalar o Widevine novamente.',
+      )
+    },
+  )
   quadraSession = session.fromPartition('persist:quadra')
   quadraSession.setUserAgent(electronUserAgent)
   if (process.platform === 'win32') app.setAppUserModelId('com.quadra.multiview')
