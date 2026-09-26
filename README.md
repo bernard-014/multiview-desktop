@@ -5,7 +5,7 @@ Quadra é um aplicativo desktop Electron para abrir de 1 a 16 páginas independe
 ## Como rodar
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -13,37 +13,30 @@ Para gerar o build e o instalador Windows:
 
 ```bash
 npm run build
-npm run dist
+npm run dist:release
 ```
 
 O instalador é escrito em `release/`. Depois de instalado, o programa funciona sem Vite ou servidor local.
+
+## Reprodução protegida e Disney+
+
+O runtime Windows usa ECS `v44.1.0+wvcus` da Castlabs. O aplicativo espera `components.whenReady()` antes de criar os painéis e usa a versão Chromium real no user-agent. Se Widevine não inicializar, o Quadra mostra um aviso e continua aberto; conteúdo protegido pode ficar indisponível até nova tentativa.
+
+`npm ci` deve baixar o runtime ECS, incluindo executável e assinatura VMP. `npm run test:ecs` confirma versão, origem Git HTTPS, binário e `.sig`. O diagnóstico `npm run test:drm-diagnostic` verifica EME/Widevine localmente; ele não comprova que um serviço reproduza um título.
+
+O instalador NSIS de produção exige `castlabs-evs==1.3.2` e autenticação EVS válida. O hook `electron/after-sign.cjs` assina e verifica streaming de produção depois das alterações no executável; falhas e assinaturas de desenvolvimento interrompem o build. `npm run dist:drm-poc` preserva a assinatura de desenvolvimento somente para teste e não gera release.
+
+A documentação da investigação e os limites da evidência Disney+ estão em [docs/disney-plus-drm.md](docs/disney-plus-drm.md). O usuário deve fazer login no perfil Quadra quando necessário; credenciais, cookies, tokens e licenças não são coletados.
 
 ## Atualizações automáticas no Windows
 
 Somente o aplicativo empacotado para Windows consulta o release estável do GitHub ao abrir. Se houver uma versão nova, o Quadra pergunta antes de baixar; depois do download, pergunta novamente antes de reiniciar. **Reiniciar e instalar** interrompe os painéis abertos. **Agora não** e **Depois** não instalam nada em segundo plano; a atualização pode ser aceita na próxima abertura ou pelo botão **Verificar atualizações** na tela inicial. Esse botão também reabre a confirmação de instalação após escolher **Depois**.
 
-O primeiro build com o updater precisa ser instalado manualmente. A distribuição atual para conhecidos é sem certificado de assinatura Windows: o instalador deve ser obtido do release e aceito manualmente.
+O workflow `.github/workflows/windows-pr-checks.yml` executa instalação limpa, verificações ECS, testes sem secrets e smokes em cada PR. O workflow `.github/workflows/windows-release.yml` roda ao enviar uma tag `v*`; exige correspondência tag/package, EVS de produção, metadata, blockmap e verificação do payload extraído do NSIS. Ele cria um release draft e não o promove automaticamente.
 
-O workflow `.github/workflows/windows-release.yml` roda somente quando uma tag `v*` é enviada. Antes de publicar, ele exige que a tag seja exatamente `v${package.version}`, executa `npm ci`, typecheck, testes e build NSIS, e valida os nomes/metadata dos artefatos. Para preparar a versão `1.0.10` após a revisão:
+Depois do merge, a tag deve apontar para o commit integrado e usar uma versão nova. Baixe o instalador do draft, confira `release-verification.json`, valide os hashes e teste Disney+ nesse instalador, incluindo recarga e tela cheia. Só então publique o draft como `latest`. Nunca reutilize ou mova uma tag pública.
 
-Faça o merge do PR antes de criar a tag: ela deve apontar para o commit aprovado na branch principal, cujo package.json contém a mesma versão. Aprovar ou fazer merge do PR, sozinho, não publica um release. Os comandos de tag e push abaixo iniciam a publicação.
-
-```bash
-npm ci
-npm run typecheck
-npm test
-npm run dist:release
-npm run test:release-metadata
-git fetch multiview-desktop
-git tag v1.0.10 multiview-desktop/feature/dynamic-panel-layout
-git push multiview-desktop v1.0.10
-```
-
-O workflow publica no release do repositório `bernard-014/multiview-desktop` `Quadra-Setup-1.0.10.exe`, `Quadra-Setup-1.0.10.exe.blockmap` e `latest.yml`, com os nomes exatos gerados em `release/`. O `latest.yml` aponta para o instalador e seu hash; sem ele o updater não encontra a versão. O `.blockmap` permite o download diferencial e também deve ser publicado. Não renomeie esses arquivos depois de gerar o metadata.
-
-`npm run dist` e `npm run dist:release` são builds locais sem publicação; nenhum deles exige certificado. No CI, `CSC_IDENTITY_AUTO_DISCOVERY=false` evita procurar certificado automaticamente, enquanto `verifyUpdateCodeSignature: true` permanece ativo. Sem certificado, o `app-update.yml` não contém `publisherName`, então o `NsisUpdater` não tem identidade para validar assinatura: não declare esses instaladores como assinados. O updater ainda usa HTTPS do GitHub, hash SHA-512 do `latest.yml` e `disableWebInstaller`; essas verificações não devem ser desativadas. O workflow usa somente o `GITHUB_TOKEN` efêmero com `contents: write` para criar/atualizar o release; nenhum token é gravado no repositório ou no aplicativo.
-
-Usuários que ainda estiverem em uma versão anterior ao updater devem instalar manualmente a primeira versão que o contém. Se um release apresentar problema, publique uma versão superior (por exemplo, `1.0.10`) em vez de reutilizar a versão defeituosa; como recuperação, reinstale manualmente um instalador válido e depois deixe o updater avançar para a versão superior.
+Sem certificado Authenticode, o instalador não deve ser declarado como assinado pelo Windows. EVS/VMP valida o pacote para DRM e não substitui Authenticode; o updater também continua validando HTTPS e o SHA-512 de `latest.yml`.
 
 ## Uso
 

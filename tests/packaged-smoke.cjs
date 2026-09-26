@@ -7,6 +7,7 @@ const path = require('node:path')
 const { createWeddBetsFixture } = require('./weddbets-fixture.cjs')
 
 const projectRoot = path.resolve(__dirname, '..')
+const expectedAppVersion = `v${require('../package.json').version}`
 
 function findPackagedExecutable() {
   if (process.env.QUADRA_PACKAGED_EXE) return process.env.QUADRA_PACKAGED_EXE
@@ -128,7 +129,7 @@ async function run() {
       })()`)
       assert.equal(visible, true, 'A toolbar empacotada deve ficar inteira e acima dos painéis.')
     }
-    assert.equal(await evaluate(target.webSocketDebuggerUrl, `document.querySelector('.app-version')?.textContent`), 'v1.10')
+    assert.equal(await evaluate(target.webSocketDebuggerUrl, `document.querySelector('.app-version')?.textContent`), expectedAppVersion)
     assert.equal(await evaluate(target.webSocketDebuggerUrl, `Boolean(document.querySelector('.chooser'))`), true)
     const grid = await evaluate(target.webSocketDebuggerUrl, `(() => {
       document.querySelector('[data-count="16"]').click()
@@ -247,7 +248,7 @@ async function run() {
     })()`)
     assert.equal(transparentPanel, true, 'A interface empacotada encobre o conteúdo do painel.')
     await assertToolbar()
-    process.stdout.write(JSON.stringify({ executable: executablePath, version: 'v1.10', grid16: true, chooserReturn: true, electronView: true }) + '\n')
+    process.stdout.write(JSON.stringify({ executable: executablePath, version: expectedAppVersion, grid16: true, chooserReturn: true, electronView: true }) + '\n')
   } finally {
     if (child.exitCode === null) {
       child.kill()

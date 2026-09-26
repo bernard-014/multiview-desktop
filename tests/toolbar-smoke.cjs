@@ -374,16 +374,22 @@ async function worker() {
   }
   await runWeddGeometryScenarios()
   async function click(selector) {
-    await ui(`(() => {
-      document.dispatchEvent(new MouseEvent('mousemove', { clientX: 20, clientY: 20, bubbles: true }))
-      const el = document.querySelector(${JSON.stringify(selector)})
-      if (!el) throw new Error('Missing control: ' + ${JSON.stringify(selector)})
-      el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
-      const r = el.getBoundingClientRect()
-      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
-      if (!el.contains(hit)) throw new Error('Covered control: ' + ${JSON.stringify(selector)})
-      el.click()
+    const result = await ui(`(() => {
+      try {
+        document.dispatchEvent(new MouseEvent('mousemove', { clientX: 20, clientY: 20, bubbles: true }))
+        const el = document.querySelector(${JSON.stringify(selector)})
+        if (!el) return { error: 'Missing control', selector: ${JSON.stringify(selector)}, controls: [...document.querySelectorAll('[data-organizer-aliases]')].map((item) => item.getAttribute('data-organizer-aliases')) }
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+        const r = el.getBoundingClientRect()
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+        if (!el.contains(hit)) return { error: 'Covered control', selector: ${JSON.stringify(selector)}, hit: hit?.className ?? hit?.tagName, bounds: { x: r.x, y: r.y, width: r.width, height: r.height } }
+        el.click()
+        return { ok: true }
+      } catch (error) {
+        return { error: String(error), stack: error?.stack }
+      }
     })()`)
+    if (!result?.ok) throw new Error(`Toolbar control ${selector} failed: ${JSON.stringify(result)}`)
     await wait(60)
   }
   async function variants(label) {

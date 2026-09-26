@@ -7,6 +7,7 @@ const path = require('node:path')
 const { createWeddBetsFixture } = require('./weddbets-fixture.cjs')
 
 const projectRoot = path.resolve(__dirname, '..')
+const expectedAppVersion = `v${require('../package.json').version}`
 const electronPath = path.join(projectRoot, 'node_modules', 'electron', 'dist', 'electron.exe')
 const mainPath = path.join(projectRoot, 'out', 'main', 'main.js')
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -116,7 +117,7 @@ async function run() {
   })
   try {
     const target = await waitForRendererTarget(port)
-    assert.equal(await evaluate(target.webSocketDebuggerUrl, `document.querySelector('.app-version')?.textContent`), 'v1.10')
+    assert.equal(await evaluate(target.webSocketDebuggerUrl, `document.querySelector('.app-version')?.textContent`), expectedAppVersion)
     await evaluate(target.webSocketDebuggerUrl, `document.querySelector('[data-count="2"]').click()`)
     await evaluate(target.webSocketDebuggerUrl, `document.querySelector('.panel[data-slot="0"] [data-weddbets]').click()`)
     const catalog = await waitForPageTarget(port, (candidate) => candidate.url.includes('/wedd/'))
